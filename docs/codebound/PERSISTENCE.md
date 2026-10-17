@@ -2,9 +2,10 @@
 
 [Architecture](README.md) · [Gateway](GATEWAY.md) · [Tracking issue #1](https://github.com/KnightRider242/anythingmcp-BlackForestHackathon/issues/1)
 
-`CodeboundPersistenceModule` exports `ScriptPersistenceService`. It is deliberately
-not imported by AppModule: this phase registers no HTTP/MCP routes, executes no
-scripts and adds no UI. Shared contracts are unchanged. Cloud and self-hosted use
+`CodeboundPersistenceModule` exports `ScriptPersistenceService`. Phase A added
+storage only; [Phase B execution](EXECUTION.md) now imports it through
+`CodeboundExecutionModule` in AppModule and registers the execution HTTP route.
+Shared contracts are unchanged. Cloud and self-hosted use
 the same tables, tenant checks and storage limits; binding approval reuses the
 existing gateway authorization and deployment-dependent license checks.
 
@@ -46,7 +47,8 @@ no storage fields. Finalization remains possible after script deletion.
 - `beginRun(principal, scriptId, expectedRevision, executionId)` locks that scoped
   script row against updates/deletes, inserts a RUNNING receipt and returns its
   exact frozen snapshot. It does not open a gateway or start a sandbox. Execution
-  IDs must come from trusted future orchestration, not sandbox IPC.
+  IDs come from trusted orchestration, not sandbox IPC. Phase B uses the
+  receipt-bound `beginExecution` finalizer to record termination after revocation.
 - `finishRun(principal, executionId, completion)` accepts only terminal status,
   bounded metrics and a shared error shape. It atomically transitions RUNNING
   once. Messages are replaced with a fixed catalog; raw messages are not stored.

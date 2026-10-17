@@ -1,6 +1,6 @@
 # CODEBOUND — AnythingMCP codebase and architecture guide
 
-> **Status (2026-10-17):** Contracts, isolated sandbox, gateway and [Phase A persistence](PERSISTENCE.md) are present on `feat/codebound-lifecycle`. HTTP/MCP lifecycle wiring and end-to-end execution remain pending. Paths are repository-relative.
+> **Status (2026-10-17):** Contracts, isolated sandbox, gateway, [Phase A persistence](PERSISTENCE.md) and [Phase B execution](EXECUTION.md) are present on `feat/codebound-lifecycle`. An authenticated HTTP endpoint now executes saved scripts through Docker and the authorized gateway. MCP registration, UI and marketplace installation remain pending. Paths are repository-relative.
 
 ## 1. What we're building
 
@@ -41,7 +41,7 @@ Keep existing AnythingMCP infrastructure. Do **not** implement a new integration
 | `packages/backend/prisma/schema.prisma` | PostgreSQL models managed by Prisma | CodeboundScript/CodeboundScriptRun, authorized by issue #1 |
 | `packages/backend/src/common/` | Prisma/Redis/deployment/HTTP safeguards | Reuse relevant services |
 | `packages/backend/src/codebound/` | New project-owned CODEBOUND module area | Contracts, isolated runner, authorized gateway and Phase A persistence |
-| `deploy/codebound/` | Proposed runner infrastructure | **Does not yet exist** |
+| `deploy/codebound/` | Linux sandbox image, bootstrap and watchdog | Used by the disposable Docker runner |
 
 ### Technologies already in use
 

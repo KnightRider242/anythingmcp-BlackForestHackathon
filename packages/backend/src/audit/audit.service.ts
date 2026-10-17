@@ -82,6 +82,8 @@ export class AuditService implements OnModuleDestroy {
     durationMs?: number;
     error?: string;
     clientInfo?: string;
+    /** Keep independently attributable execution receipts from being coalesced. */
+    deduplicate?: boolean;
   }): Promise<void> {
     // Every failing call, not just the ones that end up as a fresh row: the
     // repeat-dedup check just below collapses an identical, fast-repeating
@@ -101,7 +103,7 @@ export class AuditService implements OnModuleDestroy {
         .catch((err: any) => this.logger.warn(`Alert dispatch failed: ${err?.message || err}`));
     }
 
-    const repeatKey = data.status === 'SUCCESS' ? null : repeatSignature(data);
+    const repeatKey = data.status === 'SUCCESS' || data.deduplicate === false ? null : repeatSignature(data);
     if (repeatKey && this.countRepeat(repeatKey)) return;
 
     const resolvedUserId = await this.resolveUserId(data.userId, data.userEmail);

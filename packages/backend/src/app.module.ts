@@ -10,6 +10,7 @@ import { McpAuthModule } from '@rekog/mcp-nest-auth';
 import { mcpStrategy } from './mcp-server/mcp-strategy';
 import { AuthModule } from './auth/auth.module';
 import { ConnectorsModule } from './connectors/connectors.module';
+import { CodeboundExecutionModule } from './codebound/execution/codebound-execution.module';
 import { McpServerModule } from './mcp-server/mcp-server.module';
 
 import { UsersModule } from './users/users.module';
@@ -159,6 +160,7 @@ if (useOAuth) {
     AuthModule,
     UsersModule,
     ConnectorsModule,
+    CodeboundExecutionModule,
     AdaptersModule,
     McpServerModule,
 

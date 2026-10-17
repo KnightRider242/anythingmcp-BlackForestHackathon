@@ -1,9 +1,10 @@
 # CODEBOUND sandbox milestone
 
 The shared contracts live in `packages/backend/src/codebound/`. The sandbox
-adapter is `sandbox/docker-sandbox-runner.ts`; it is not registered in NestJS
-and exposes no HTTP/MCP endpoint. Persistence, real connector authorization,
-UI and marketplace installation are separate delivery steps.
+adapter is `sandbox/docker-sandbox-runner.ts`. [Phase B execution](EXECUTION.md)
+now registers it in NestJS and routes sandbox reads through the authorized
+gateway from an authenticated execution HTTP endpoint. UI, MCP registration
+and marketplace installation remain separate delivery steps.
 
 ## Cross-platform host support
 
@@ -56,7 +57,7 @@ upper/lower case, so CLI proxy credentials are not passed into the container.
 Only source, JSON input and bounded policy are sent over stdin. `api.read` uses
 newline-delimited JSON on stdout/stdin; the trusted supervisor validates frames,
 counts calls independently, and passes at most one operation to its callback.
-The callback must be an authorized gateway in a future milestone. Never install
+The integrated callback uses the authorized gateway. Never install
 a fake gateway in a user-facing deployment. No existing connector cache is used.
 
 The execution container runs as UID/GID 65534, with read-only root, no extra

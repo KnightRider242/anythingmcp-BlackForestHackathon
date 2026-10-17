@@ -28,6 +28,14 @@ describe('AuditService', () => {
   });
 
   describe('logInvocation', () => {
+    it('keeps failures from separate CODEBOUND executions independently attributable', async () => {
+      mockPrisma.toolInvocation.create.mockResolvedValue({ id: 'receipt-row' });
+      for (const executionId of ['execution-a', 'execution-b']) {
+        await service.logInvocation({ toolId: 'tool-1', userId: 'user-1', organizationId: 'org-1',
+          input: { executionId }, status: 'ERROR', error: 'FORBIDDEN', deduplicate: false });
+      }
+      expect(mockPrisma.toolInvocation.create).toHaveBeenCalledTimes(2);
+    });
     it('should persist an invocation record', async () => {
       await service.logInvocation({
         toolId: 'tool-1',

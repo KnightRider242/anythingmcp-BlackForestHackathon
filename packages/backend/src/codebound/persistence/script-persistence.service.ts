@@ -178,7 +178,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
     });
   }
 
-  /** Future orchestration gets exactly the snapshot identified by this receipt. */
+  /** Capture exactly the snapshot identified by this receipt. */
   beginRun(principal: ExecutionPrincipal, scriptId: string, expectedRevision: number, executionId: string): Promise<Outcome<ScriptSnapshot>> {
     return this.outcome(async () => {
       const p = await this.authenticate(principal); const scriptKey = id.parse(scriptId);
@@ -204,18 +204,51 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
 
   finishRun(principal: ExecutionPrincipal, executionId: string, completion: RunCompletion): Promise<Outcome<null>> {
     return this.outcome(async () => {
-      const p = await this.authenticate(principal); const execution = id.parse(executionId); const value = completionSchema.parse(completion);
-      const error = value.error;
-      const changed = await this.prisma.codeboundScriptRun.updateMany({ where: { executionId: execution, ...this.scope(p), callerUserId: p.userId, status: 'RUNNING' },
-        data: { status: value.status === 'succeeded' ? 'SUCCEEDED' : value.status === 'failed' ? 'FAILED' : 'CANCELLED',
-          ...value.metrics, finishedAt: new Date(), errorCode: error?.code ?? null,
-          errorMessage: error ? messages[error.code] : null, errorLimit: error?.limit ?? null } });
-      if (!changed.count) {
-        const exists = await this.prisma.codeboundScriptRun.findFirst({ where: { executionId: execution, ...this.scope(p), callerUserId: p.userId }, select: { executionId: true } });
-        throw new PersistenceFailure(exists ? 'VERSION_CONFLICT' : 'NOT_FOUND');
-      }
+      const p = await this.authenticate(principal);
+      return this.completeRun(p, id.parse(executionId), completion);
+    });
+  }
+
+  /** Backend-only capability: can finalize only the receipt just created here.
+   * Live authority is intentionally not needed to record cleanup after revocation.
+   * No public route accepts this capability or an unauthenticated receipt ID.
+   */
+  async beginExecution(principal: ExecutionPrincipal, scriptId: string, expectedRevision: number, executionId: string) {
+    const p = principalSchema.safeParse(principal);
+    if (!p.success) return { ok: false as const, error: { code: 'INVALID_INPUT' as const, message: messages.INVALID_INPUT } };
+    const begun = await this.beginRun(p.data, scriptId, expectedRevision, executionId);
+    if (!begun.ok) return begun;
+    return { ok: true as const, value: { snapshot: begun.value,
+      finalize: (completion: RunCompletion) => this.outcome(() => this.completeRun(p.data, executionId, completion)),
+    } };
+  }
+
+  /** Lazy owner-scoped recovery; never replay work or touch another replica's
+   * recent runs. Five minutes exceeds the wall-time, watchdog and cleanup limits.
+   */
+  recoverInterruptedRuns(principal: ExecutionPrincipal): Promise<Outcome<null>> {
+    return this.outcome(async () => {
+      const p = await this.authenticate(principal);
+      await this.prisma.$executeRaw`UPDATE codebound_script_runs SET status = 'CANCELLED',
+        finished_at = CURRENT_TIMESTAMP, error_code = 'CANCELLED', error_message = 'Execution cancelled'
+        WHERE organization_id = ${p.organizationId} AND owner_user_id = ${p.userId} AND caller_user_id = ${p.userId}
+        AND status = 'RUNNING' AND started_at < CURRENT_TIMESTAMP - INTERVAL '5 minutes'`;
       return null;
     });
+  }
+
+  private async completeRun(p: ExecutionPrincipal, execution: string, completion: RunCompletion): Promise<null> {
+    const value = completionSchema.parse(completion);
+    const error = value.error;
+    const changed = await this.prisma.codeboundScriptRun.updateMany({ where: { executionId: execution, ...this.scope(p), callerUserId: p.userId, status: 'RUNNING' },
+      data: { status: value.status === 'succeeded' ? 'SUCCEEDED' : value.status === 'failed' ? 'FAILED' : 'CANCELLED',
+        ...value.metrics, finishedAt: new Date(), errorCode: error?.code ?? null,
+        errorMessage: error ? messages[error.code] : null, errorLimit: error?.limit ?? null } });
+    if (!changed.count) {
+      const exists = await this.prisma.codeboundScriptRun.findFirst({ where: { executionId: execution, ...this.scope(p), callerUserId: p.userId }, select: { executionId: true } });
+      throw new PersistenceFailure(exists ? 'VERSION_CONFLICT' : 'NOT_FOUND');
+    }
+    return null;
   }
 
   getRun(principal: ExecutionPrincipal, executionId: string) {

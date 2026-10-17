@@ -3,9 +3,9 @@
 [Back to CODEBOUND architecture and milestones](README.md) · [Sandbox implementation](SANDBOX.md)
 
 Milestone 3 implements the approved gateway interface without adding an API, MCP
-registration, persistence, UI or marketplace installation. Import
-`CodeboundGatewayModule` from future lifecycle integration; it is not registered
-in `AppModule` by this branch. The shared contract is unchanged.
+registration, persistence, UI or marketplace installation. [Phase B execution](EXECUTION.md)
+now imports `CodeboundGatewayModule` through lifecycle integration in AppModule.
+The shared contract is unchanged.
 
 ## Existing integration map
 
