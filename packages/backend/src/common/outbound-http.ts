@@ -157,6 +157,11 @@ function createOutboundAdapter(options: OutboundRequestOptions): AxiosAdapter {
 
     for (let redirects = 0; ; redirects++) {
       await assertSafeOutboundUrl(url, process.env, { skipAllowlists: options.skipAllowlists });
+      // DNS/policy reads are not cancellable. Do not enter the native adapter
+      // with a signal aborted during that await: it can still create a request.
+      if (config.signal?.aborted) {
+        throw new AxiosError('Request cancelled', AxiosError.ERR_CANCELED, config);
+      }
       if (deadline) {
         const left = deadline - Date.now();
         if (left <= 0) {

@@ -1,8 +1,9 @@
 # CODEBOUND shared contracts
 
 These contracts are AGPL-3.0-only and apply equally to Cloud and self-hosted
-deployments. This directory currently implements validation only: no runner,
-authorization, persistence, API route, MCP tool, or UI is registered.
+deployments. This branch includes shared validation and an unregistered authorized
+connector gateway module. No persistence, API route, MCP tool, or UI is registered.
+See `docs/codebound/README.md` at the repository root for gateway integration limits.
 
 ## MVP boundary
 
