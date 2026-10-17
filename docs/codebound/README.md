@@ -1,6 +1,6 @@
 # CODEBOUND — AnythingMCP codebase and architecture guide
 
-> **Status (2026-10-17):** Reference and onboarding document. Verified against source on `feat/codebound-lifecycle` after commit `844304e`. This is a codebase map, **not** a claim that CODEBOUND works end to end. Paths are repository-relative.
+> **Status (2026-10-17):** Contracts, isolated sandbox, gateway and [Phase A persistence](PERSISTENCE.md) are present on `feat/codebound-lifecycle`. HTTP/MCP lifecycle wiring and end-to-end execution remain pending. Paths are repository-relative.
 
 ## 1. What we're building
 
@@ -38,9 +38,9 @@ Keep existing AnythingMCP infrastructure. Do **not** implement a new integration
 | `packages/backend/src/mcp-server/` | Dynamic tool registry, MCP endpoint exposure and invocation | Register and invoke saved scripts |
 | `packages/backend/src/connectors/` | Connector CRUD, credentials, execution engines, response shaping | Reuse via trusted connector gateway |
 | `packages/backend/src/adapters/` | Built-in connector catalog and installation | Extend installations with script templates |
-| `packages/backend/prisma/schema.prisma` | PostgreSQL models managed by Prisma | Future Script/ScriptRun models (issue first) |
+| `packages/backend/prisma/schema.prisma` | PostgreSQL models managed by Prisma | CodeboundScript/CodeboundScriptRun, authorized by issue #1 |
 | `packages/backend/src/common/` | Prisma/Redis/deployment/HTTP safeguards | Reuse relevant services |
-| `packages/backend/src/codebound/` | New project-owned CODEBOUND module area | Currently contracts + validation only |
+| `packages/backend/src/codebound/` | New project-owned CODEBOUND module area | Contracts, isolated runner, authorized gateway and Phase A persistence |
 | `deploy/codebound/` | Proposed runner infrastructure | **Does not yet exist** |
 
 ### Technologies already in use
@@ -153,7 +153,7 @@ Security and trust boundaries:
 | `packages/backend/src/codebound/contracts.spec.ts` | 29 passing test cases as run by the developer |
 | `packages/backend/src/codebound/README.md` | Detailed trust-boundary and validator notes |
 
-Verified GitHub commit: `844304e7a81b7c8a1a6e3e84406097ad859ee086` on `feat/codebound-lifecycle`. The developer ran `npm test -- --runInBand codebound/contracts.spec.ts` (29/29 passed) and `npx tsc --noEmit --incremental false -p tsconfig.json` (no errors). **No script runner, gateway implementation, persistence, HTTP route, dynamically registered script tool, or UI exists yet.** Declaring a resource limit does not enforce it.
+Milestone 1 reference: commit `844304e7a81b7c8a1a6e3e84406097ad859ee086` on `feat/codebound-lifecycle`; the developer ran the contract suite (29/29) and TypeScript successfully. Subsequent work added the [sandbox](SANDBOX.md), [gateway](GATEWAY.md) and [Phase A persistence](PERSISTENCE.md). HTTP routes, end-to-end orchestration, saved-script MCP registration and UI remain unimplemented. The flow above describes the target integration, not a currently wired execution path.
 
 ## 8. Implementation order and team responsibilities
 
@@ -172,7 +172,7 @@ Integration order: **contracts → sandbox + gateway in parallel → persisted H
 
 - Runner supervisor topology and secure availability on all deployments.
 - Exact endpoint fingerprint construction and cancellation propagation to the REST engine.
-- Script/run Prisma tables and migrations (issue must be opened first).
+- Script/run orchestration and crash/revocation recovery; persistence schema is implemented under issue #1.
 - Full output JSON Schema interpretation and validation.
 - Marketplace ownership and reinstall/uninstall/version semantics.
 - How scripts appear through the shared fixed-toolset `/mcp` endpoint.

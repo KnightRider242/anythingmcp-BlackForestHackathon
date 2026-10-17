@@ -12,6 +12,78 @@ datasource db {
   provider = "postgresql"
 }
 
+// CODEBOUND persistence, issue #1. Receipt links are cleared on script deletion;
+// immutable receipt identity and tenant/owner references remain until account/org deletion.
+enum CodeboundRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model CodeboundScript {
+  id               String @id @default(cuid())
+  organizationId   String @map("organization_id")
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ownerUserId      String @map("owner_user_id")
+  owner            User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  name             String @db.VarChar(128)
+  description      String @db.VarChar(1024)
+  source           String @db.Text
+  sourceSha256     String @map("source_sha256") @db.VarChar(64)
+  inputSchema      Json @map("input_schema")
+  outputSchema     Json @map("output_schema")
+  connectorId      String @map("connector_id")
+  connector        Connector @relation(fields: [connectorId, organizationId, ownerUserId], references: [id, organizationId, userId], onDelete: Cascade, onUpdate: Restrict)
+  toolId           String @map("tool_id")
+  tool             McpTool @relation(fields: [toolId, connectorId], references: [id, connectorId], onDelete: Cascade, onUpdate: Restrict)
+  definitionSha256 String @map("definition_sha256") @db.VarChar(64)
+  revision         Int @default(1)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  runs             CodeboundScriptRun[]
+
+  @@unique([id, organizationId, ownerUserId])
+  @@index([organizationId, ownerUserId, id])
+  @@index([connectorId])
+  @@index([toolId, connectorId])
+  @@map("codebound_scripts")
+}
+
+model CodeboundScriptRun {
+  executionId          String @id @map("execution_id") @db.VarChar(128)
+  organizationId       String @map("organization_id")
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ownerUserId          String @map("owner_user_id")
+  owner                User @relation("CodeboundRunOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  callerUserId         String @map("caller_user_id")
+  caller               User @relation("CodeboundRunCaller", fields: [callerUserId], references: [id], onDelete: Cascade)
+  originalScriptId     String @map("original_script_id") @db.VarChar(128)
+  // Nullable mirror columns allow a composite tenant/owner FK to be SET NULL
+  // together, without erasing the retained receipt's organization or owner.
+  scriptId             String? @map("script_id")
+  scriptOrganizationId String? @map("script_organization_id")
+  scriptOwnerUserId    String? @map("script_owner_user_id")
+  script               CodeboundScript? @relation(fields: [scriptId, scriptOrganizationId, scriptOwnerUserId], references: [id, organizationId, ownerUserId], onDelete: SetNull, onUpdate: Restrict)
+  revision             Int
+  sourceSha256         String @map("source_sha256") @db.VarChar(64)
+  status               CodeboundRunStatus @default(RUNNING)
+  createdAt            DateTime @default(now()) @map("created_at")
+  startedAt            DateTime @default(now()) @map("started_at")
+  finishedAt           DateTime? @map("finished_at")
+  wallTimeMs           Float @default(0) @map("wall_time_ms")
+  connectorCalls       Int @default(0) @map("connector_calls")
+  connectorResponseBytes Int @default(0) @map("connector_response_bytes")
+  outputBytes          Int @default(0) @map("output_bytes")
+  errorCode            String? @map("error_code") @db.VarChar(32)
+  errorMessage         String? @map("error_message") @db.VarChar(512)
+  errorLimit           String? @map("error_limit") @db.VarChar(32)
+
+  @@index([organizationId, ownerUserId, createdAt])
+  @@index([scriptId, scriptOrganizationId, scriptOwnerUserId])
+  @@map("codebound_script_runs")
+}
+
 // ── Organization (multi-tenancy) ────────────────────────────────────────────
 
 model Organization {
@@ -46,6 +118,8 @@ model Organization {
   userRoleAssignments UserRoleAssignment[]
   identityProviders   IdentityProvider[]
   mcpConnectionGrants McpConnectionGrant[]
+  codeboundScripts   CodeboundScript[]
+  codeboundRuns      CodeboundScriptRun[]
 
   @@map("organizations")
 }
@@ -171,6 +245,9 @@ model User {
   recoveryCodes            RecoveryCode[]
   scimGroupMemberships     IdentityProviderGroupMember[]
   mcpConnectionGrants      McpConnectionGrant[]
+  codeboundScripts         CodeboundScript[]
+  codeboundRunsOwned       CodeboundScriptRun[] @relation("CodeboundRunOwner")
+  codeboundRunsCalled      CodeboundScriptRun[] @relation("CodeboundRunCaller")
 
   @@index([organizationId])
   @@map("users")
@@ -433,7 +510,9 @@ model Connector {
   kgNodes         KgNode[]
   kgState         KgConnectorState?
   kgSkills        KgSkillSuggestion[]
+  codeboundScripts CodeboundScript[]
 
+  @@unique([id, organizationId, userId])
   @@index([organizationId])
   @@map("connectors")
 }
@@ -531,7 +610,9 @@ model McpTool {
 
   invocations ToolInvocation[]
   roleAccess  ToolRoleAccess[]
+  codeboundScripts CodeboundScript[]
 
+  @@unique([id, connectorId])
   @@unique([connectorId, name])
   @@map("mcp_tools")
 }

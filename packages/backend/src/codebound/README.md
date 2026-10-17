@@ -1,9 +1,10 @@
 # CODEBOUND shared contracts
 
 These contracts are AGPL-3.0-only and apply equally to Cloud and self-hosted
-deployments. It includes shared validation and an unregistered Docker sandbox
-adapter. No authorization, persistence, API route, MCP tool, or UI is registered.
-See `docs/codebound/README.md` at the repository root for sandbox tests and limits.
+deployments. It includes shared validation, an isolated Docker sandbox, an authorized
+gateway and Phase A persistence modules. No API route, MCP tool, or UI is registered.
+See `docs/codebound/PERSISTENCE.md` for storage and retention,
+`docs/codebound/GATEWAY.md` for authorization, and `docs/codebound/SANDBOX.md` for runner limits.
 
 ## MVP boundary
 
@@ -51,6 +52,6 @@ process. The intended runner uses disposable isolated containers with no direct
 network, host mounts, application credentials, or Docker socket. No infrastructure
 is created by these contracts. Existing deployment and license checks still apply.
 
-Persistence must follow the repository's issue-before-schema-change and migration
-process. Script CRUD, gateway, sandbox, MCP, UI and marketplace hooks are separate
-implementation steps after contract review.
+Phase A persistence follows the repository's schema-change process under issue #1.
+Run orchestration, HTTP/MCP registration, UI and marketplace hooks remain separate
+implementation steps; declaring a contract does not wire those features.

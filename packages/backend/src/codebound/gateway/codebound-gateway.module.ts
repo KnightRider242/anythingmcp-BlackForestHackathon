@@ -13,6 +13,6 @@ import { AuthorizedConnectorGatewayService } from './authorized-connector-gatewa
 @Module({
   imports: [PrismaModule, ConnectorsModule, RolesModule, McpServersModule, LicenseModule],
   providers: [BoundReadAuthorization, BoundRestExecutor, AuthorizedConnectorGatewayService],
-  exports: [AuthorizedConnectorGatewayService],
+  exports: [AuthorizedConnectorGatewayService, BoundReadAuthorization],
 })
 export class CodeboundGatewayModule {}
