@@ -178,6 +178,12 @@ Integration order: **contracts → sandbox + gateway in parallel → persisted H
 - How scripts appear through the shared fixed-toolset `/mcp` endpoint.
 - Real connector response shape, paging, and dataset completeness.
 
+## Cross-platform requirement (Windows, Linux, macOS)
+
+CODEBOUND must run on **Windows, Linux, and macOS hosts** using a **Linux-container sandbox**. The sandbox is not a native Windows/macOS executable: it depends on Linux namespaces, seccomp, cgroups, and a Linux PID 1 watchdog. Supported host deployment paths are Docker Desktop with WSL 2/Linux containers on Windows, Docker Engine on Linux, and Docker Desktop's Linux VM on macOS (Intel or Apple Silicon). A working Docker daemon, Linux containers, compatible image architecture, and the repository's Node.js prerequisites are mandatory. If unavailable, execution must fail closed, never fall back to native JavaScript evaluation.
+
+**Validation status:** real live-container tests were reported on Windows with Docker Desktop/Linux containers; separate native-Linux and macOS validation is still **pending**. Before declaring cross-platform support verified, run the same live suite on Windows, native Linux, and macOS (including arm64), test daemon-unavailable behavior and cleanup, and verify Docker endpoint configuration without hardcoded host socket paths. See [SANDBOX.md](SANDBOX.md).
+
 ## 9. How to run and test locally
 
 Follow **root `AGENTS.md`** and `.github/CONTRIBUTING.md` first.
