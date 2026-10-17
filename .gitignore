@@ -56,3 +56,4 @@ packages/frontend/playwright/.cache/
 
 # Impeccable local hook cache
 .impeccable/hook.cache.json
+docs/CODEBOUND_CONTEXT.md
