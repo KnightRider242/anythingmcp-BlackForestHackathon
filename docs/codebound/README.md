@@ -1,6 +1,6 @@
 # CODEBOUND — AnythingMCP codebase and architecture guide
 
-> **Status (2026-10-17):** Contracts, isolated sandbox, gateway, [persistence](PERSISTENCE.md), [execution](EXECUTION.md), [per-server MCP tools](MCP.md) and [management API/UI](MANAGEMENT.md) are present on `feat/codebound-lifecycle`. Saved scripts execute through authenticated HTTP and MCP, Docker and the authorized gateway. Global/shared MCP script exposure and marketplace installation remain pending. Paths are repository-relative. The historical assessment below contains earlier milestone notes; use the linked milestone documents for current implementation details.
+> **Status (2026-10-17):** Contracts, isolated sandbox, gateway, [persistence](PERSISTENCE.md), [execution](EXECUTION.md), [per-server MCP tools](MCP.md), [management API/UI](MANAGEMENT.md) and [marketplace script installation](MARKETPLACE.md) are present on `feat/codebound-lifecycle`. Hacker News installs one owner-scoped summary script through the dashboard marketplace. Global/shared MCP script exposure remains pending. Paths are repository-relative. The historical assessment below contains earlier milestone notes; use the linked milestone documents for current implementation details.
 
 ## 1. What we're building
 

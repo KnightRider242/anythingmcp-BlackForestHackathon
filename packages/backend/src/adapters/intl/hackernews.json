@@ -15,6 +15,15 @@
     "authType": "NONE",
     "authConfig": {}
   },
+  "codeboundScripts": [{
+    "key": "top-story-summary",
+    "name": "Hacker News top story summary",
+    "description": "Count the returned top-story IDs and return only the first ten. One read-only call; does not fetch story titles or paginate.",
+    "toolName": "hackernews_top_stories",
+    "source": "async function main(input, api) {\n  const ids = await api.read({});\n  if (!Array.isArray(ids) || !ids.every(id => Number.isSafeInteger(id) && id > 0)) throw new Error('Invalid story list');\n  return { returnedCount: ids.length, topIds: ids.slice(0, 10) };\n}",
+    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+    "outputSchema": { "type": "object", "properties": { "returnedCount": { "type": "integer" }, "topIds": { "type": "array", "items": { "type": "integer" }, "maxItems": 10 } }, "required": ["returnedCount", "topIds"], "additionalProperties": false }
+  }],
   "tools": [
     {
       "name": "hackernews_top_stories",

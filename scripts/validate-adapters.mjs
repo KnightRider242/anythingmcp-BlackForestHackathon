@@ -252,6 +252,33 @@ export function validateAdapter(adapter, file, region) {
   }
   if (errors.length) return { errors, warnings };
 
+  if (adapter.codeboundScripts !== undefined) {
+    const scripts = adapter.codeboundScripts;
+    const fail = (path) => errors.push(error('codebound-template', path, 'invalid CODEBOUND template or tool reference',
+      'Use one bounded local template referencing an enabled REST GET tool, without credentials or binding IDs.', 'codebound-scripts'));
+    const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+    const json = (v, depth = 0) => depth <= 32 && (v === null || ['string', 'boolean'].includes(typeof v) ||
+      (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'object' &&
+      Object.entries(v).every(([key, item]) => !['__proto__', 'constructor', 'prototype'].includes(key) && json(item, depth + 1))));
+    const text = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max;
+    if (!Array.isArray(scripts) || scripts.length !== 1) fail('codeboundScripts');
+    else for (const [i, script] of scripts.entries()) {
+      const path = `codeboundScripts[${i}]`;
+      const fields = ['key', 'name', 'description', 'source', 'inputSchema', 'outputSchema', 'toolName'];
+      if (!object(script) || Object.keys(script).length !== fields.length || Object.keys(script).some(k => !fields.includes(k))) { fail(path); continue; }
+      if (!text(script.key, 1, 64) || !/^[a-z][a-z0-9-]*$/.test(script.key) || !text(script.name, 1, 128) ||
+          !text(script.description, 0, 1024) || !text(script.source, 1, 32768) || Buffer.byteLength(script.source) > 32768 ||
+          !text(script.toolName, 1, 128)) fail(path);
+      for (const field of ['inputSchema', 'outputSchema']) {
+        if (!object(script[field]) || !json(script[field]) || Buffer.byteLength(JSON.stringify(script[field])) > 16384) fail(`${path}.${field}`);
+      }
+      const tools = Array.isArray(adapter.tools) ? adapter.tools.filter(t => t.name === script.toolName) : [];
+      if (adapter.connector?.type !== 'REST' || !adapter.connector?.baseUrl?.startsWith('https://') ||
+          !['NONE', 'API_KEY', 'BEARER_TOKEN', 'BASIC_AUTH'].includes(adapter.connector?.authType) || tools.length !== 1 ||
+          tools[0].enabled === false || tools[0].useProxy === true || tools[0].endpointMapping?.method !== 'GET') fail(`${path}.toolName`);
+    }
+  }
+
   if (adapter.slug !== expectedSlug) errors.push(error('slug', 'slug', `"${adapter.slug}" does not match filename "${expectedSlug}"`, `Rename slug to "${expectedSlug}" (or rename the file).`, 'adapter-fields'));
   // A directory can be broader than the declared adapter region, so this is informational.
   if (adapter.region !== region) warnings.push(warning('region-mismatch', 'region', `region "${adapter.region}" does not match directory "${region}"`));

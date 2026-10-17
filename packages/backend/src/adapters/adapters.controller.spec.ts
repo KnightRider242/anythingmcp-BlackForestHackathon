@@ -3,6 +3,7 @@ import { AdaptersController } from './adapters.controller';
 
 function buildController() {
   const adaptersService = {
+    hasScriptTemplates: jest.fn().mockReturnValue(false),
     importAdapter: jest
       .fn()
       .mockResolvedValue({ connectorId: 'c1', toolsCreated: 3 }),

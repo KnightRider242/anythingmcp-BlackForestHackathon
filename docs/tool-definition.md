@@ -41,6 +41,18 @@ store, on /welcome and in the chat matches them like the name; they are never
 displayed. Keep them to names that clearly mean this app, each at most 40
 characters; a misspelling needs no alias, the search tolerates typos.
 
+### CODEBOUND scripts
+
+An optional `codeboundScripts` array may contain **one reviewed local template**
+for a supported HTTPS REST adapter. Each template has `key` (lowercase slug),
+`name`, `description`, `source` (`async function main(input, api)`), `inputSchema`,
+`outputSchema`, and `toolName` referencing exactly one enabled, non-proxy GET
+tool in that adapter. Binding IDs, credentials and remote script URLs are not
+accepted. Source is limited to 32 KiB, each schema to 16 KiB; the existing shared
+definition validators also apply at installation. Installation never executes
+the script. See [marketplace scripts](codebound/MARKETPLACE.md) and
+`intl/hackernews.json` for the complete example and retry/ownership behavior.
+
 ### Tools
 
 Each entry in `tools` needs a string `name`, a useful `description`, and its

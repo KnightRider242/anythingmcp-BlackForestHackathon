@@ -3,7 +3,11 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
+  ForbiddenException,
 } from '@nestjs/common';
+import type { ExecutionPrincipal } from '../codebound/contracts';
+import { MarketplaceScriptsService } from './marketplace-scripts.service';
 import { PrismaService } from '../common/prisma.service';
 import { McpServerService } from '../mcp-server/mcp-server.service';
 import { encrypt } from '../common/crypto/encryption.util';
@@ -54,6 +58,7 @@ export class AdaptersService {
     private readonly mcpServer: McpServerService,
     private readonly configService: ConfigService,
     private readonly connectors: ConnectorsService,
+    @Optional() private readonly marketplaceScripts?: MarketplaceScriptsService,
   ) {
     this.encryptionKey = getRequiredSecret(
       'ENCRYPTION_KEY',
@@ -74,6 +79,8 @@ export class AdaptersService {
         };
       });
   }
+
+  hasScriptTemplates(slug: string): boolean { return this.getBySlug(slug).codeboundScripts !== undefined; }
 
   /**
    * The adapter as the setup form needs it: the definition, each variable
@@ -633,10 +640,12 @@ export class AdaptersService {
     userId: string,
     organizationId: string,
     credentials?: Record<string, string>,
+    principal?: ExecutionPrincipal,
   ): Promise<{
     connectorId: string;
     toolsCreated: number;
     probe: ImportProbeResult | null;
+    scriptsInstalled?: number;
   }> {
     const adapter = this.getBySlug(slug);
     const {
@@ -647,8 +656,7 @@ export class AdaptersService {
       envVarsToPersist,
     } = this.prepareConnector(adapter, credentials);
 
-    const connector = await this.prisma.connector.create({
-      data: {
+    const connectorData = {
         userId,
         organizationId,
         name: adapter.connector.name,
@@ -680,8 +688,19 @@ export class AdaptersService {
           // own region or sandbox" — the two look identical without it.
           baseUrlBaseline: storedBaseUrl,
         },
-      },
-    });
+      };
+
+    if (adapter.codeboundScripts !== undefined) {
+      if (!principal || principal.userId !== userId || principal.organizationId !== organizationId || !this.marketplaceScripts) {
+        throw new ForbiddenException('Authenticated dashboard script installation required');
+      }
+      const result = await this.marketplaceScripts.install(adapter, principal, connectorData, id => catalogToolRows(id, adapter.tools));
+      // Commit first. A registry/notification outage must not turn a safe retry into another installation.
+      try { await this.mcpServer.reloadConnectorTools(result.connectorId); }
+      catch { this.logger.warn('Marketplace installed; connector registry refresh deferred'); }
+      return result;
+    }
+    const connector = await this.prisma.connector.create({ data: connectorData });
 
     let toolsCreated = 0;
 
@@ -735,21 +754,7 @@ export class AdaptersService {
       }
     }
 
-    const toolRows = toolsToCreate.map((tool) => ({
-      connectorId: connector.id,
-      name: tool.name,
-      description: tool.description,
-      isEnabled: tool.enabled !== false,
-      // Seed the proxy preference from the adapter spec (default off).
-      useProxy: tool.useProxy === true,
-      parameters: tool.parameters as any,
-      endpointMapping: tool.endpointMapping as any,
-      responseMapping: tool.responseMapping as any,
-      outputSchema: ((tool as any).outputSchema ?? null) as any,
-      annotations: (tool.annotations ?? undefined) as any,
-      // A catalog tool: catalog updates may change or retire it.
-      origin: 'catalog',
-    }));
+    const toolRows = catalogToolRows(connector.id, toolsToCreate);
 
     try {
       // One insert for the whole adapter instead of one per tool
@@ -981,6 +986,14 @@ export class AdaptersService {
     }
     return obj;
   }
+}
+
+/** Shared tool-row projection for ordinary and atomic script-bearing installs. */
+function catalogToolRows(connectorId: string, tools: AdapterDefinition['tools']) {
+  return tools.map(tool => ({ connectorId, name: tool.name, description: tool.description, isEnabled: tool.enabled !== false,
+    useProxy: tool.useProxy === true, parameters: tool.parameters as any, endpointMapping: tool.endpointMapping as any,
+    responseMapping: tool.responseMapping as any, outputSchema: (tool.outputSchema ?? null) as any,
+    annotations: (tool.annotations ?? undefined) as any, origin: 'catalog' }));
 }
 
 export interface PopularConnectorItem {

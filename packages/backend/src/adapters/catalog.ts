@@ -498,6 +498,7 @@ import {
 } from '../connectors/odata/odata-builtins';
 import { computeAdapterVersion } from './catalog-fingerprint';
 import type { EnvVarMeta, SetupKind } from './env-var-meta';
+import type { CodeboundTemplate } from './codebound-templates';
 
 export type VerifyHint = string | { hint: string; suggest?: string };
 
@@ -591,6 +592,8 @@ export interface AdapterMeta {
 }
 
 export interface AdapterDefinition extends AdapterMeta {
+  /** Reviewed local templates only. Installation never executes source. */
+  codeboundScripts?: CodeboundTemplate[];
   instructions?: string;
   connector: {
     name: string;

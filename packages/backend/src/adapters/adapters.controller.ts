@@ -10,7 +10,10 @@ import {
   BadRequestException,
   HttpCode,
   HttpException,
+  Optional,
 } from '@nestjs/common';
+import { AuthService } from '../auth/auth.service';
+import { dashboardPrincipal } from '../codebound/management/dashboard-principal';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { AdaptersService } from './adapters.service';
@@ -47,6 +50,7 @@ export class AdaptersController {
     private readonly licenseGuard: LicenseGuardService,
     private readonly mcpServers: McpServersService,
     private readonly productEvents: ProductEventService,
+    @Optional() private readonly auth?: AuthService,
   ) {}
 
   // Declared before `:slug`, which would otherwise take these paths for an
@@ -131,7 +135,8 @@ export class AdaptersController {
       }
       try {
         await this.licenseGuard.checkCanCreateConnector(req.user.sub, orgId);
-        const imported = await this.adaptersService.importAdapter(slug, req.user.sub, orgId);
+        const principal = this.adaptersService.hasScriptTemplates(slug) && this.auth ? dashboardPrincipal(req, this.auth) : undefined;
+        const imported = await this.adaptersService.importAdapter(slug, req.user.sub, orgId, undefined, principal);
         const attached = await this.mcpServers.attachToDefaultServer(
           req.user.sub,
           orgId,
@@ -243,6 +248,7 @@ export class AdaptersController {
       req.user.sub,
       req.user.organizationId,
       body?.credentials,
+      this.adaptersService.hasScriptTemplates(slug) && this.auth ? dashboardPrincipal(req, this.auth) : undefined,
     );
     // Same as a hand-made connector (connectors.controller): put it on a
     // server straight away. A marketplace install that reaches no server is
@@ -260,6 +266,7 @@ export class AdaptersController {
       // The store page has always read this to say whether the first test
       // call worked; it was computed and then left out of the response.
       probe: result.probe,
+      ...(result.scriptsInstalled !== undefined ? { scriptsInstalled: result.scriptsInstalled } : {}),
     };
   }
 }

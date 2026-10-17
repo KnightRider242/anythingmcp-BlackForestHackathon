@@ -43,6 +43,7 @@ type FingerprintTool = {
 };
 
 type FingerprintAdapter = {
+  codeboundScripts?: unknown;
   instructions?: string;
   connector?: { name?: string; type?: string; baseUrl?: string; authType?: string };
   tools: FingerprintTool[];
@@ -77,6 +78,7 @@ export function computeAdapterVersion(adapter: FingerprintAdapter): string {
       authType: adapter.connector?.authType ?? '',
     },
     tools,
+    ...(adapter.codeboundScripts === undefined ? {} : { codeboundScripts: adapter.codeboundScripts }),
   });
 }
 

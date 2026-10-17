@@ -104,9 +104,9 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
     return { ...definition, sourceSha256: createHash('sha256').update(definition.source).digest('hex') };
   }
 
-  private async approve(p: ExecutionPrincipal, snapshot: ScriptSnapshot) {
+  private async approve(p: ExecutionPrincipal, snapshot: ScriptSnapshot, store?: Store) {
     try {
-      const tool = await this.authorization.authorize(p, snapshot);
+      const tool = await this.authorization.authorize(p, snapshot, store);
       // Avoid accidentally saving decrypted connector variables pasted into source/schema.
       const text = JSON.stringify(snapshot);
       const secrets = Object.values(tool.connector.envVars ?? {}).filter((v): v is string => typeof v === 'string' && !!v);
@@ -134,6 +134,18 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
         return this.snapshot(await tx.codeboundScript.create({ data: { id: snapshot.id, ...this.scope(p), ...this.data(snapshot) } }));
       });
     }));
+  }
+
+  /** Trusted installation transaction only. Same validators/auth as create; caller notifies after commit. */
+  createForInstallation(principal: ExecutionPrincipal, definition: ScriptDefinition, tx: Store): Promise<Outcome<ScriptSnapshot>> {
+    return this.outcome(async () => {
+      const p = await this.authenticate(principal, tx);
+      const value = this.definition(definition);
+      const snapshot = parseScriptSnapshot({ ...value, ...this.scope(p), id: randomUUID(), revision: 1 });
+      await this.approve(p, snapshot, tx);
+      await this.authenticate(p, tx);
+      return this.snapshot(await tx.codeboundScript.create({ data: { id: snapshot.id, ...this.scope(p), ...this.data(snapshot) } }));
+    });
   }
 
   get(principal: ExecutionPrincipal, scriptId: string): Promise<Outcome<ScriptSnapshot>> {

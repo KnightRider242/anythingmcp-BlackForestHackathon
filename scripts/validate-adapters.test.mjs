@@ -8,6 +8,23 @@ import * as validatorModule from './validate-adapters.mjs';
 const { validateAdapter, renderReport } = validatorModule;
 const docs = readFileSync(new URL('../docs/tool-definition.md', import.meta.url), 'utf8');
 
+test('CODEBOUND templates validate fields, bounds and exact read-tool references', () => {
+  const example = JSON.parse(readFileSync(new URL('../packages/backend/src/adapters/intl/hackernews.json', import.meta.url), 'utf8'));
+  assert.equal(validateAdapter(example, 'hackernews.json', 'intl').errors.length, 0);
+  for (const mutate of [
+    a => { a.codeboundScripts[0].toolName = 'missing'; },
+    a => { a.codeboundScripts[0].source = 'x'.repeat(32769); },
+    a => { a.codeboundScripts[0].binding = {}; },
+    a => { a.tools[0].endpointMapping.method = 'POST'; },
+    a => { a.codeboundScripts[0].inputSchema = []; },
+    a => { a.codeboundScripts[0].outputSchema = { value: 'x'.repeat(16385) }; },
+    a => { a.codeboundScripts.push(a.codeboundScripts[0]); },
+  ]) {
+    const invalid = structuredClone(example); mutate(invalid);
+    assert(validateAdapter(invalid, 'hackernews.json', 'intl').errors.some(e => e.rule === 'codebound-template'));
+  }
+});
+
 function adapter(overrides = {}) {
   return {
     slug: 'good', name: 'Good', description: 'A valid adapter', region: 'de',

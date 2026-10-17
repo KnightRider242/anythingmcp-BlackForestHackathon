@@ -44,7 +44,7 @@ export class BoundReadAuthorization {
   ) {}
 
   /** Always read live rows, never registry snapshots or cached role decisions. */
-  async authorize(principal: ExecutionPrincipal, script: ScriptSnapshot): Promise<BoundReadTool> {
+  async authorize(principal: ExecutionPrincipal, script: ScriptSnapshot, store: Prisma.TransactionClient = this.prisma): Promise<BoundReadTool> {
     const { userId, organizationId } = principal;
     if (principal.tokenExpiresAtMs <= Date.now() || principal.tokenIssuedAtMs > Date.now() + 5000 ||
         script.organizationId !== organizationId || script.ownerUserId !== userId) throw new Error('Denied');
@@ -69,12 +69,12 @@ export class BoundReadAuthorization {
     }
     // Fetch identity and the exact executable definition after role/grant work,
     // rather than executing a row captured before those asynchronous checks.
-    const user = await this.prisma.user.findFirst({
+    const user = await store.user.findFirst({
       where: { id: userId, memberships: { some: { organizationId, deactivatedAt: null } } },
       select: { id: true, sessionsValidFrom: true },
     });
     if (!user || isTokenRevoked({ iat: Math.floor(principal.tokenIssuedAtMs / 1000) }, user.sessionsValidFrom)) throw new Error('Denied');
-    const tool = await this.prisma.mcpTool.findFirst({
+    const tool = await store.mcpTool.findFirst({
       where: {
         id: script.binding.toolId, connectorId: script.binding.connectorId, isEnabled: true,
         connector: { organizationId, userId, isActive: true },
