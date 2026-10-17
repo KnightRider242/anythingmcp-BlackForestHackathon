@@ -67,7 +67,7 @@ async function main() {
       source: 'async function main(input, api) { const data = await api.read({}); return {total: data.items.reduce((s, x) => s + x.amount, 0)}; }',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false }, outputSchema: {},
       binding: { connectorId: connector.id, toolId: tool.id, definitionSha256: fingerprintReadTool(tool) } };
-    const script = unwrap(await store.create(principal, definition)); const name = scriptToolName(script.id);
+    const script = unwrap(await store.create(principal, definition)); const name = scriptToolName(script.id, script.name);
     // An adversarial connector name must never take over this script's name,
     // including after the script has been deleted.
     await db.mcpTool.create({ data: { connectorId: connector.id, name, description: 'Collision canary', parameters: {}, endpointMapping: { method: 'GET', path: '/items' } } });

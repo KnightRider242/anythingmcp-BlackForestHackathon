@@ -13,17 +13,23 @@ describe('CODEBOUND MCP bridge (database and execution mocked)', () => {
     source, sourceSha256: createHash('sha256').update(source).digest('hex'), name: 'Summary', description: 'Compact totals',
     binding: { connectorId: 'connector', toolId: 'tool', definitionSha256: 'a'.repeat(64) },
     inputSchema: { type: 'object', properties: { category: { type: 'string' } }, required: ['category'], additionalProperties: false }, outputSchema: {} });
-  let service: CodeboundMcpToolsService; let persistence: any; let authorization: any; let execution: any;
+  let service: CodeboundMcpToolsService; let persistence: any; let authorization: any; let execution: any; let keys: any;
   beforeEach(() => {
     persistence = { list: jest.fn().mockResolvedValue({ ok: true, value: [snapshot] }),
       get: jest.fn().mockResolvedValue({ ok: true, value: snapshot }) };
     authorization = { authorize: jest.fn().mockResolvedValue({}) };
     execution = { execute: jest.fn().mockResolvedValue({ ok: true, value: { status: 'succeeded', output: { total: 11 }, executionId: 'run', revision: 1 } }) };
-    service = new CodeboundMcpToolsService({ mcpServerConfig: { findFirst: async () => ({ organizationId: 'org-a' }) } } as any,
+    keys = { findFirst: jest.fn().mockResolvedValue({ userId: 'owner', organizationId: 'org-a',
+      createdAt: new Date(Date.now() - 10_000) }) };
+    service = new CodeboundMcpToolsService({ mcpServerConfig: { findFirst: async () => ({ organizationId: 'org-a' }) }, mcpApiKey: keys } as any,
       new AuthService(jwt), persistence, authorization, execution);
   });
   const request = (claims = {}, method = 'jwt') => Object.assign(new EventEmitter(), { user: { authMethod: method, sub: 'spoofed-user', organizationId: 'spoofed-org' },
     headers: { authorization: `Bearer ${jwt.sign({ sub: 'owner', organizationId: 'wrong-claim-org', type: 'access', azp: 'client-a', ...claims }, { expiresIn: '1h' })}` }, aborted: false });
+  const keyRequest = (token = 'mcp_codebound-test-key') => Object.assign(new EventEmitter(), {
+    user: { authMethod: 'mcp_api_key', sub: 'untrusted', organizationId: 'spoofed-org' },
+    headers: { authorization: `Bearer ${token}` }, aborted: false,
+  });
   const response = () => Object.assign(new EventEmitter(), { writableFinished: false, destroyed: false });
   const within = <T>(fn: () => Promise<T>, req = request()) => service.withRequest(req as any, response() as any, 'server-a', fn);
   async function handler() {
@@ -53,6 +59,45 @@ describe('CODEBOUND MCP bridge (database and execution mocked)', () => {
   it('fails closed for forged JWTs', async () => {
     const req = request(); req.headers.authorization += 'tampered';
     await within(async () => { expect(service.currentPrincipal()).toBeUndefined(); }, req);
+  });
+  it('re-verifies a server-pinned MCP API key and uses only the live credential owner', async () => {
+    await within(async () => {
+      expect(service.currentPrincipal()).toMatchObject({
+        userId: 'owner', organizationId: 'org-a',
+        origin: { kind: 'mcp', serverId: 'server-a', oauthClientId: null },
+      });
+      const invoke = await handler();
+      expect(await invoke({ category: 'sales' }, context())).toMatchObject({
+        content: [{ text: '{"total":11}' }],
+      });
+      expect(execution.execute.mock.calls[0][0].userId).toBe('owner');
+    }, keyRequest());
+    expect(keys.findFirst).toHaveBeenCalledWith({
+      where: { key: 'mcp_codebound-test-key', isActive: true, mcpServerId: 'server-a' },
+      select: { userId: true, organizationId: true, createdAt: true },
+    });
+  });
+  it('denies revoked, missing and unscoped API keys even when req.user claims authority', async () => {
+    for (const token of ['mcp_revoked', 'mcp_unscoped']) {
+      keys.findFirst.mockResolvedValueOnce(null);
+      await within(async () => {
+        expect(service.currentPrincipal()).toBeUndefined();
+        expect(await service.entries(service.currentPrincipal())).toEqual([]);
+      }, keyRequest(token));
+    }
+    expect(persistence.list).not.toHaveBeenCalled();
+  });
+  it('denies keys from a server without live membership', async () => {
+    (service as any).prisma.mcpServerConfig.findFirst = jest.fn().mockResolvedValue(null);
+    await within(async () => expect(service.currentPrincipal()).toBeUndefined(), keyRequest());
+  });
+  it('returns human-readable, collision-resistant, bounded MCP script names', () => {
+    const first = scriptToolName('script-a', 'price_drift_check');
+    const second = scriptToolName('script-b', 'price_drift_check');
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^codebound_script_[a-f0-9]{12}_price_drift_check$/);
+    expect(scriptToolName('script-a', 'x'.repeat(500)).length).toBeLessThanOrEqual(64);
+    expect(scriptToolName('script-a', '../__proto__/')).toMatch(/^codebound_script_[a-f0-9]{12}_proto$/);
   });
   it('generates stable bounded names and registers only public metadata/schema', async () => {
     expect(scriptToolName('script-a')).toBe(scriptToolName('script-a'));

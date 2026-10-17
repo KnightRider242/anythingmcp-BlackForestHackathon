@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { AuthService } from '../../auth/auth.service';
 import { resolveUserIdFromTokenPayload } from '../../auth/resolve-user-id.util';
+import { presentedMcpApiKey } from '../../auth/mcp-api-key.util';
 import { PrismaService } from '../../common/prisma.service';
 import { jsonSchemaToZodShape } from '../../mcp-server/tool-schema.util';
 import { ScriptPersistenceService } from '../persistence/script-persistence.service';
@@ -17,7 +18,18 @@ import type { ExecutionPrincipal, ScriptSnapshot } from '../contracts';
 
 /** Reserved on the per-server endpoint; connector tools cannot impersonate scripts. */
 export const CODEBOUND_TOOL_PREFIX = 'codebound_script_';
-export const scriptToolName = (id: string) => CODEBOUND_TOOL_PREFIX + createHash('sha256').update(id).digest('base64url');
+/**
+ * Stable per-script disambiguation, with a readable suffix for MCP clients.
+ * The CODEBOUND prefix remains reserved and no owner-supplied name can escape it.
+ * The final suffix is intentionally the script title so tools such as
+ * codebound_script_abcd1234_price_drift_check are discoverable by clients.
+ */
+export const scriptToolName = (id: string, title = 'script') => {
+  const digest = createHash('sha256').update(id).digest('hex').slice(0, 12);
+  const slug = title.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'script';
+  const budget = 64 - CODEBOUND_TOOL_PREFIX.length - digest.length - 1;
+  return CODEBOUND_TOOL_PREFIX + digest + '_' + slug.slice(-budget);
+};
 export const MCP_DISCOVERY_LIMITS = Object.freeze({ scripts: 32, metadataBytes: 64 * 1024,
   concurrent: 4, perOrganization: 2, wallTimeMs: 3000 });
 export interface ScriptToolEntry {
@@ -50,9 +62,40 @@ export class CodeboundMcpToolsService {
   }
 
   private async principal(req: Request, serverId: string): Promise<ExecutionPrincipal | undefined> {
-    // Static credentials, anonymous mode and API keys retain existing connector
-    // behavior but cannot execute owner-only CODEBOUND scripts in this MVP.
-    if ((req as Request & { user?: { authMethod?: string } }).user?.authMethod !== 'jwt') return;
+    const authMethod = (req as Request & { user?: { authMethod?: string } }).user?.authMethod;
+    if (authMethod === 'mcp_api_key') {
+      // Revalidate the presented credential against live server-side rows.
+      // Neither req.user nor a client-supplied user/organization ID is trusted
+      // as CODEBOUND authority. Only keys explicitly pinned to this server
+      // can expose owner scripts.
+      const key = presentedMcpApiKey(req.headers, process.env.MCP_BEARER_TOKEN);
+      if (!key) return;
+      const credential = await this.prisma.mcpApiKey.findFirst({
+        where: { key, isActive: true, mcpServerId: serverId },
+        select: { userId: true, organizationId: true, createdAt: true },
+      });
+      if (!credential) return;
+      const server = await this.prisma.mcpServerConfig.findFirst({
+        where: {
+          id: serverId, organizationId: credential.organizationId, isActive: true,
+          organization: { members: { some: { userId: credential.userId, deactivatedAt: null } } },
+        },
+        select: { organizationId: true },
+      });
+      if (!server) return;
+      const now = Date.now();
+      const issuedAt = credential.createdAt.getTime();
+      if (!Number.isFinite(issuedAt) || issuedAt > now + 5000) return;
+      // MCP keys have no JWT expiry; this bounded request-scoped authorization
+      // is re-created only after rechecking the live key on every POST.
+      return {
+        userId: credential.userId, organizationId: server.organizationId,
+        tokenIssuedAtMs: issuedAt, tokenExpiresAtMs: now + 60_000,
+        origin: { kind: 'mcp', serverId, oauthClientId: null },
+      };
+    }
+    // Anonymous/static credentials remain ineligible for script execution.
+    if (authMethod !== 'jwt') return;
     const token = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1];
     if (!token) return;
     const claims = this.auth.verifyToken(token) as ReturnType<AuthService['verifyToken']> & { type?: string; azp?: string; client_id?: string };
@@ -122,7 +165,7 @@ export class CodeboundMcpToolsService {
           const shape = jsonSchemaToZodShape(script.inputSchema as Record<string, unknown>);
           const schema = script.inputSchema.additionalProperties === false ? z.strictObject(shape) : z.looseObject(shape);
           // Conversion errors never break the caller's other MCP tools.
-          metadataBytes += Buffer.byteLength(JSON.stringify({ name: scriptToolName(script.id),
+          metadataBytes += Buffer.byteLength(JSON.stringify({ name: scriptToolName(script.id, script.name),
             description: `${script.name}${script.description ? ': ' + script.description : ''}`, title: script.name,
             inputSchema: z.toJSONSchema(schema), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true } }));
           if (metadataBytes > MCP_DISCOVERY_LIMITS.metadataBytes) break;
@@ -135,7 +178,7 @@ export class CodeboundMcpToolsService {
   private entry(script: ScriptSnapshot, schema: z.ZodObject): ScriptToolEntry {
     // Do not retain source, output schema or binding in every SDK/session closure.
     const { id, revision, name, description, organizationId, ownerUserId } = script;
-    const toolName = scriptToolName(id);
+    const toolName = scriptToolName(id, name);
     return { name: toolName, sig: `${toolName}:${revision}`,
       register: server => server.registerTool(toolName, {
         title: name, description: `${name}${description ? ': ' + description : ''}`,
