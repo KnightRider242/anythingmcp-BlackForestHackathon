@@ -5,6 +5,36 @@ import type { CheckoutSource } from './checkout-source';
 // In production (Docker / Railway) Next.js rewrites proxy /api/* to the backend.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
+export interface ScriptDefinition {
+  name: string; description: string; source: string;
+  inputSchema: Record<string, unknown>; outputSchema: Record<string, unknown>;
+  binding: { connectorId: string; toolId: string; definitionSha256: string };
+}
+export interface SavedScript extends ScriptDefinition {
+  id: string; revision: number; sourceSha256: string; organizationId: string; ownerUserId: string;
+}
+export interface ScriptBinding { connectorName: string; toolName: string; binding: ScriptDefinition['binding'] }
+type CodeboundOutcome<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } };
+export interface ScriptRun {
+  executionId: string; status: 'succeeded' | 'failed' | 'cancelled'; output?: unknown;
+  error?: { code: string; message: string };
+}
+
+async function codeboundRequest<T>(path: string, options: RequestOptions): Promise<T> {
+  const result = await request<CodeboundOutcome<T>>(`/api/codebound/${path}`, options);
+  if (!result.ok) throw new ApiError(result.error.message, 400, result);
+  return result.value;
+}
+export const codebound = {
+  list: (token: string, afterId?: string) => codeboundRequest<SavedScript[]>(`scripts${afterId ? `?afterId=${encodeURIComponent(afterId)}` : ''}`, { token }),
+  get: (token: string, id: string) => codeboundRequest<SavedScript>(`scripts/${encodeURIComponent(id)}`, { token }),
+  bindings: (token: string, afterId?: string) => codeboundRequest<{ items: ScriptBinding[]; nextCursor: string | null }>(`bindings${afterId ? `?afterId=${encodeURIComponent(afterId)}` : ''}`, { token }),
+  create: (token: string, definition: ScriptDefinition) => codeboundRequest<SavedScript>('scripts', { token, method: 'POST', body: { definition } }),
+  update: (token: string, script: SavedScript, definition: ScriptDefinition) => codeboundRequest<SavedScript>(`scripts/${encodeURIComponent(script.id)}`, { token, method: 'PUT', body: { expectedRevision: script.revision, definition } }),
+  remove: (token: string, script: SavedScript) => codeboundRequest<null>(`scripts/${encodeURIComponent(script.id)}`, { token, method: 'DELETE', body: { expectedRevision: script.revision } }),
+  run: (token: string, script: SavedScript, input: Record<string, unknown>) => codeboundRequest<ScriptRun>('scripts/execute', { token, method: 'POST', body: { scriptId: script.id, expectedRevision: script.revision, input } }),
+};
+
 interface RequestOptions {
   method?: string;
   body?: unknown;

@@ -8,11 +8,14 @@ import { DockerSandboxRunner } from '../sandbox/docker-sandbox-runner';
 import { ScriptExecutionService } from './script-execution.service';
 import { ScriptExecutionController } from './script-execution.controller';
 import { CodeboundMcpToolsService } from '../mcp/codebound-mcp-tools.service';
+import { PrismaModule } from '../../common/prisma.module';
+import { ScriptManagementController } from '../management/script-management.controller';
+import { ScriptBindingsService } from '../management/script-bindings.service';
 
 @Module({
-  imports: [AuthModule, AuditModule, CodeboundPersistenceModule, CodeboundGatewayModule],
-  controllers: [ScriptExecutionController],
-  providers: [ScriptExecutionService, CodeboundMcpToolsService, { provide: DockerSandboxRunner, useFactory: () => new DockerSandboxRunner() }],
+  imports: [AuthModule, AuditModule, PrismaModule, CodeboundPersistenceModule, CodeboundGatewayModule],
+  controllers: [ScriptExecutionController, ScriptManagementController],
+  providers: [ScriptBindingsService, ScriptExecutionService, CodeboundMcpToolsService, { provide: DockerSandboxRunner, useFactory: () => new DockerSandboxRunner() }],
   exports: [ScriptExecutionService, CodeboundMcpToolsService],
 })
 export class CodeboundExecutionModule {}

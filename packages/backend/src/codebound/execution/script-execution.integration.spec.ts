@@ -30,6 +30,8 @@ import { ScriptPersistenceService } from '../persistence/script-persistence.serv
 import type { ExecutionPrincipal, Outcome, ScriptDefinition, ScriptExecutionResult } from '../contracts';
 import { ScriptExecutionService } from './script-execution.service';
 import { ScriptExecutionController } from './script-execution.controller';
+import { ScriptManagementController } from '../management/script-management.controller';
+import { ScriptBindingsService } from '../management/script-bindings.service';
 
 const live = process.env.RUN_CODEBOUND_EXECUTION_LIVE === '1' ? describe : describe.skip;
 const unwrap = <T>(result: Outcome<T>): T => {
@@ -75,7 +77,9 @@ live('CODEBOUND execution: real JWT HTTP, PostgreSQL, Docker and HTTPS', () => {
     persistence = new ScriptPersistenceService(db as any, authorization);
     audit = new AuditService(db as any);
     execution = new ScriptExecutionService(persistence, new AuthorizedConnectorGatewayService(authorization, new BoundRestExecutor(connectors)), new DockerSandboxRunner(), audit);
-    const module = await Test.createTestingModule({ controllers: [ScriptExecutionController], providers: [
+    const module = await Test.createTestingModule({ controllers: [ScriptExecutionController, ScriptManagementController], providers: [
+      { provide: ScriptPersistenceService, useValue: persistence },
+      { provide: ScriptBindingsService, useValue: new ScriptBindingsService(db as any, authorization) },
       { provide: ScriptExecutionService, useValue: execution }, { provide: PrismaService, useValue: db },
       { provide: ConfigService, useValue: config }, { provide: JwtService, useValue: jwt }, AuthService, JwtStrategy,
     ] }).compile();
@@ -130,7 +134,10 @@ live('CODEBOUND execution: real JWT HTTP, PostgreSQL, Docker and HTTPS', () => {
   const receipt = (result: ScriptExecutionResult) => db.codeboundScriptRun.findFirstOrThrow({ where: { executionId: result.executionId, organizationId: owner.organizationId } });
 
   it('executes a saved script through verified JWT HTTP, real Docker and authenticated HTTPS; persists metadata only', async () => {
-    const script = await saved();
+    const created = await fetch(`${apiUrl}/api/codebound/scripts`, { method: 'POST', headers: {
+      'Content-Type': 'application/json', Authorization: `Bearer ${token()}` }, body: JSON.stringify({ definition }) });
+    expect(created.status).toBe(201);
+    const script = unwrap<any>(await created.json() as any);
     const response = await post({ scriptId: script.id, expectedRevision: 1, input: { confidential: 'fixture-sensitive-input' } });
     expect(response.status).toBe(200);
     const result = unwrap<ScriptExecutionResult>(response.body);

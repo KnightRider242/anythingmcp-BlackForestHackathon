@@ -55,6 +55,7 @@ const NAV: NavGroup[] = [
     group: 'Build',
     items: [
       { href: '/connectors', label: 'Connectors', icon: ConnectorsIcon },
+      { href: '/scripts', label: 'CODEBOUND Scripts', icon: () => <I d="m8 6-6 6 6 6m8-12 6 6-6 6M14 4l-4 16" /> },
       { href: '/connectors/store', label: 'Marketplace', icon: StoreIcon },
       { href: '/mcp-server', label: 'MCP Servers', icon: McpIcon },
     ],
