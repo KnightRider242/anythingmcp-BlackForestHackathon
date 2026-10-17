@@ -15,6 +15,8 @@ import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
+import { ModuleRef } from '@nestjs/core';
+import { CodeboundMcpToolsService, CODEBOUND_TOOL_PREFIX } from '../codebound/mcp/codebound-mcp-tools.service';
 import { McpServer, createMcpHandler } from '@modelcontextprotocol/server';
 import {
   NodeStreamableHTTPServerTransport as StreamableHTTPServerTransport,
@@ -234,7 +236,15 @@ export class McpEndpointController {
     private readonly grants: McpConnectionGrantService,
     private readonly kgSkills: KgSkillService,
     @Optional() private readonly sharedSetup?: SharedSetupRegistry,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
+
+  private codeboundTools(): CodeboundMcpToolsService | undefined {
+    // The execution module depends on the connector/MCP module graph. Resolve
+    // the existing app provider lazily instead of introducing a circular import.
+    try { return this.moduleRef?.get(CodeboundMcpToolsService, { strict: false }); }
+    catch { return undefined; }
+  }
 
   // Streamable-HTTP response framing. Default: SSE-framed responses
   // (`text/event-stream`), the spec-standard envelope that also carries
@@ -943,6 +953,17 @@ export class McpEndpointController {
     res: Response,
     body: unknown,
   ) {
+    const codebound = this.codeboundTools();
+    const operation = () => this.handleScopedMcpRequest(serverId, req, res, body);
+    return codebound ? codebound.withRequest(req, res, serverId, operation) : operation();
+  }
+
+  private async handleScopedMcpRequest(
+    serverId: string,
+    req: Request,
+    res: Response,
+    body: unknown,
+  ) {
     // Before anything else, the session routing included: a session is bound
     // to a server and a user, and a key pinned to another server of that same
     // user must not reach it either.
@@ -1113,6 +1134,8 @@ export class McpEndpointController {
 
     // Register this server's tool surface onto the per-request McpServer.
     const entries = this.planToolSet(params);
+    const codebound = this.codeboundTools();
+    if (codebound) entries.push(...await codebound.entries(codebound.currentPrincipal()));
     const handles = this.registerAll(mcpServer, entries, serverId);
     const signature = this.aggregateSig(entries);
     this.registerKgResource(mcpServer, params);
@@ -1307,6 +1330,18 @@ export class McpEndpointController {
 
     this.sessionManager.touch(sessionId, Date.now());
     try {
+      const codebound = this.codeboundTools();
+      if (session.codeboundPrincipal && codebound) {
+        const current = codebound.currentPrincipal();
+        // A session opened under one OAuth client cannot list scripts under a
+        // different client/key, even when both credentials name the same user.
+        if (!current || !codebound.sameIdentity(session.codeboundPrincipal, current)) {
+          res.status(404).json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Session not found' } });
+          return true;
+        }
+        session.codeboundPrincipal = current;
+        await session.rebuild();
+      }
       await session.transport.handleRequest(req, res, body);
     } catch (error: any) {
       this.logger.error(
@@ -1355,6 +1390,7 @@ export class McpEndpointController {
           serverId,
           organizationId: invocationContext.organizationId ?? null,
           principalKey,
+          codeboundPrincipal: this.codeboundTools()?.currentPrincipal(),
           transport,
           mcpServer,
           handles,
@@ -1425,7 +1461,9 @@ export class McpEndpointController {
     kgEnabled: boolean,
     invocationContext: InvocationContext,
   ): () => Promise<void> {
-    return async () => {
+    let pending: Promise<void> | undefined;
+    let dirty = false;
+    const reconcile = async () => {
       const session = this.sessionManager.get(sessionId);
       if (!session) return;
 
@@ -1452,6 +1490,8 @@ export class McpEndpointController {
         kgEnabled,
         invocationContext,
       });
+      const codebound = this.codeboundTools();
+      if (codebound) entries.push(...await codebound.entries(session.codeboundPrincipal));
       const signature = this.aggregateSig(entries);
       if (signature === session.signature) return; // nothing changed here
 
@@ -1483,6 +1523,19 @@ export class McpEndpointController {
       }
       session.signature = signature;
     };
+    // At most one active pass and one dirty flag: repeated edits/POSTs cannot
+    // build an unbounded promise chain retaining request contexts.
+    return () => {
+      dirty = true;
+      if (!pending) {
+        pending = Promise.resolve().then(async () => {
+          try {
+            while (dirty) { dirty = false; await reconcile(); }
+          } finally { pending = undefined; }
+        });
+      }
+      return pending;
+    };
   }
 
   /**
@@ -1502,6 +1555,8 @@ export class McpEndpointController {
     const registeredNames = new Set<string>();
 
     for (const tool of serverTools) {
+      // Reserved namespace: a connector cannot take over a stale script name.
+      if (tool.name.startsWith(CODEBOUND_TOOL_PREFIX)) continue;
       // A connector that is not set up yet would only produce errors.
       if (!isListable(tool)) continue;
       // Skip tools not allowed by role

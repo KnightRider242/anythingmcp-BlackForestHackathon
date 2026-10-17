@@ -75,4 +75,19 @@ describe('McpSessionManager', () => {
     expect(good.rebuild).toHaveBeenCalled();
     expect(bad.rebuild).toHaveBeenCalled();
   });
+
+  it('scopes CODEBOUND lifecycle refresh to the affected organization and owner', async () => {
+    const mgr = new McpSessionManager();
+    const principal = { userId: 'owner', organizationId: 'org-a', tokenIssuedAtMs: 1, tokenExpiresAtMs: 100,
+      origin: { kind: 'mcp' as const, serverId: 'srv', oauthClientId: null } };
+    const own = makeEntry('own', { codeboundPrincipal: principal });
+    const foreign = makeEntry('foreign', { codeboundPrincipal: { ...principal, organizationId: 'org-b' } });
+    const other = makeEntry('other', { codeboundPrincipal: { ...principal, userId: 'other' } });
+    const legacy = makeEntry('legacy');
+    for (const entry of [own, foreign, other, legacy]) mgr.add(entry);
+    await mgr.notifyToolsChanged({ organizationId: 'org-a', ownerUserId: 'owner' });
+    expect(own.rebuild).toHaveBeenCalledTimes(1);
+    for (const entry of [foreign, other, legacy]) expect(entry.rebuild).not.toHaveBeenCalled();
+    await mgr.onModuleDestroy();
+  });
 });

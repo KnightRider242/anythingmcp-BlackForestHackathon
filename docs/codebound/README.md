@@ -1,6 +1,6 @@
 # CODEBOUND — AnythingMCP codebase and architecture guide
 
-> **Status (2026-10-17):** Contracts, isolated sandbox, gateway, [Phase A persistence](PERSISTENCE.md) and [Phase B execution](EXECUTION.md) are present on `feat/codebound-lifecycle`. An authenticated HTTP endpoint now executes saved scripts through Docker and the authorized gateway. MCP registration, UI and marketplace installation remain pending. Paths are repository-relative.
+> **Status (2026-10-17):** Contracts, isolated sandbox, gateway, [persistence](PERSISTENCE.md), [execution](EXECUTION.md) and [per-server MCP tools](MCP.md) are present on `feat/codebound-lifecycle`. Saved scripts execute through authenticated HTTP and MCP, Docker and the authorized gateway. UI, global/shared MCP script exposure and marketplace installation remain pending. Paths are repository-relative.
 
 ## 1. What we're building
 

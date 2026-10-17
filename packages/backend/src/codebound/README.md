@@ -3,7 +3,8 @@
 These contracts are AGPL-3.0-only and apply equally to Cloud and self-hosted
 deployments. It includes shared validation, an isolated Docker sandbox, an authorized
 gateway, Phase A persistence and Phase B execution modules. The authenticated
-`POST /api/codebound/scripts/execute` route is registered; no MCP tool or UI is registered.
+`POST /api/codebound/scripts/execute` route and per-server MCP script tools are registered;
+no UI is registered. See `docs/codebound/MCP.md` for discovery, authentication and reproduction.
 See `docs/codebound/EXECUTION.md` for the integrated flow and real infrastructure tests.
 See `docs/codebound/PERSISTENCE.md` for storage and retention,
 `docs/codebound/GATEWAY.md` for authorization, and `docs/codebound/SANDBOX.md` for runner limits.
@@ -56,4 +57,5 @@ is created by these contracts. Existing deployment and license checks still appl
 
 Phase A persistence follows the repository's schema-change process under issue #1.
 Run orchestration and execution HTTP integration are implemented in `execution/`.
-MCP registration, UI and marketplace hooks remain separate implementation steps.
+Per-server MCP registration lives in `mcp/`; global/shared exposure, UI and
+marketplace hooks remain separate implementation steps.

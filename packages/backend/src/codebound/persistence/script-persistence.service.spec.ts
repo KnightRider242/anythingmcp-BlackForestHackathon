@@ -26,6 +26,20 @@ function setup() {
 const metrics = { wallTimeMs: 10, connectorCalls: 1, connectorResponseBytes: 100, outputBytes: 10 };
 
 describe('CODEBOUND persistence validation (database mocked)', () => {
+  it('notifies existing MCP sessions only after successful lifecycle mutations', async () => {
+    const { db, authorization } = setup(); const sessions = { notifyToolsChanged: jest.fn().mockResolvedValue(undefined) };
+    const service = new ScriptPersistenceService(db, authorization as any, sessions as any);
+    await service.create(principal(), definition());
+    db.codeboundScript.findFirst.mockResolvedValue({ ...row(), revision: 2 });
+    await service.update(principal(), 'script-a', 1, definition());
+    await service.remove(principal(), 'script-a', 2);
+    expect(sessions.notifyToolsChanged).toHaveBeenCalledTimes(3);
+    expect(sessions.notifyToolsChanged).toHaveBeenLastCalledWith({ organizationId: 'org-a', ownerUserId: 'owner' });
+    await service.create(principal(), { ...definition(), source: '' });
+    expect(sessions.notifyToolsChanged).toHaveBeenCalledTimes(3);
+    sessions.notifyToolsChanged.mockRejectedValueOnce(new Error('notification failed'));
+    expect(await service.create(principal(), definition())).toMatchObject({ ok: true });
+  });
   it('stores only definition fields and a server-generated hash, with live authorization', async () => {
     const s = setup(); const result = await s.service.create(principal(), definition());
     expect(result).toMatchObject({ ok: true, value: { organizationId: 'org-a', ownerUserId: 'owner', revision: 1 } });

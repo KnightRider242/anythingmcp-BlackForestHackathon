@@ -1,6 +1,7 @@
 import { processGauges } from '../common/process-vitals';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import type { McpServer } from '@modelcontextprotocol/server';
+import type { ExecutionPrincipal } from '../codebound/contracts';
 import type { NodeStreamableHTTPServerTransport as StreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 
 /**
@@ -18,6 +19,8 @@ export interface McpSessionEntry {
   organizationId: string | null;
   /** Stable identity of the owner (user sub / api-key name / static method). */
   principalKey: string;
+  /** Verified CODEBOUND identity; refreshed on each owned authenticated POST. */
+  codeboundPrincipal?: ExecutionPrincipal;
   transport: StreamableHTTPServerTransport;
   mcpServer: McpServer;
   /** Live handles to this session's registered tools, keyed by tool name with
@@ -127,11 +130,13 @@ export class McpSessionManager implements OnModuleDestroy {
    * Tool surfaces changed somewhere (a connector reloaded, or a server's
    * connector assignment changed). Ask every live session to reconcile; each
    * session's rebuild() is a no-op unless ITS own tool set actually changed,
-   * so a broad notify is cheap and avoids tracking connector→server maps here.
+   * without tracking connector→server maps here. Script lifecycle callers pass
+   * an owner/organization scope to avoid rebuilding unrelated tenant sessions.
    */
-  async notifyToolsChanged(): Promise<void> {
+  async notifyToolsChanged(scope?: { organizationId: string; ownerUserId: string }): Promise<void> {
     if (this.sessions.size === 0) return;
-    const entries = Array.from(this.sessions.values());
+    const entries = Array.from(this.sessions.values()).filter(entry => !scope ||
+      (entry.codeboundPrincipal?.organizationId === scope.organizationId && entry.codeboundPrincipal.userId === scope.ownerUserId));
     await Promise.all(
       entries.map((e) =>
         e.rebuild().catch((err) =>

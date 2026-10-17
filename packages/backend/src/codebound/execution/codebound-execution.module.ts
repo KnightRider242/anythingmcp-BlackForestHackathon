@@ -7,11 +7,12 @@ import { CodeboundGatewayModule } from '../gateway/codebound-gateway.module';
 import { DockerSandboxRunner } from '../sandbox/docker-sandbox-runner';
 import { ScriptExecutionService } from './script-execution.service';
 import { ScriptExecutionController } from './script-execution.controller';
+import { CodeboundMcpToolsService } from '../mcp/codebound-mcp-tools.service';
 
 @Module({
   imports: [AuthModule, AuditModule, CodeboundPersistenceModule, CodeboundGatewayModule],
   controllers: [ScriptExecutionController],
-  providers: [ScriptExecutionService, { provide: DockerSandboxRunner, useFactory: () => new DockerSandboxRunner() }],
-  exports: [ScriptExecutionService],
+  providers: [ScriptExecutionService, CodeboundMcpToolsService, { provide: DockerSandboxRunner, useFactory: () => new DockerSandboxRunner() }],
+  exports: [ScriptExecutionService, CodeboundMcpToolsService],
 })
 export class CodeboundExecutionModule {}

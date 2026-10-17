@@ -1,5 +1,8 @@
 # CODEBOUND execution — Milestone 4 Phase B
 
+[Milestone 5A MCP integration](MCP.md) now exposes this same execution service
+through eligible saved script tools on per-server MCP endpoints.
+
 `POST /api/codebound/scripts/execute` executes an existing personal script. The
 body is `{ "scriptId": "...", "expectedRevision": 1, "input": {} }`. The existing
 dashboard JWT guard supplies the caller and live active organization; the

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { McpSessionManager } from '../../mcp-servers/mcp-session.manager';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { CodeboundScript, Prisma } from '../../generated/prisma/client';
@@ -49,7 +50,18 @@ type Store = Prisma.TransactionClient;
 /** Storage only: no HTTP/MCP registration, runner invocation or stored output. */
 @Injectable()
 export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' | 'get' | 'update' | 'remove'> {
-  constructor(private readonly prisma: PrismaService, private readonly authorization: BoundReadAuthorization) {}
+  constructor(private readonly prisma: PrismaService, private readonly authorization: BoundReadAuthorization,
+    @Optional() private readonly sessions?: McpSessionManager) {}
+
+  private changed<T>(principal: ExecutionPrincipal, operation: Promise<Outcome<T>>): Promise<Outcome<T>> {
+    const scope = { organizationId: principal.organizationId, ownerUserId: principal.userId };
+    return operation.then(result => {
+      // Local session notifications follow the existing connector lifecycle.
+      // Other replicas still refresh from PostgreSQL before their next request.
+      if (result.ok) void this.sessions?.notifyToolsChanged(scope).catch(() => {});
+      return result;
+    });
+  }
 
   private async outcome<T>(operation: () => Promise<T>): Promise<Outcome<T>> {
     try { return { ok: true, value: await operation() }; }
@@ -112,7 +124,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
   }
 
   create(principal: ExecutionPrincipal, definition: ScriptDefinition): Promise<Outcome<ScriptSnapshot>> {
-    return this.outcome(async () => {
+    return this.changed(principal, this.outcome(async () => {
       const p = await this.authenticate(principal);
       const value = this.definition(definition);
       const snapshot = parseScriptSnapshot({ ...value, ...this.scope(p), id: randomUUID(), revision: 1 });
@@ -121,7 +133,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
         await this.authenticate(p, tx);
         return this.snapshot(await tx.codeboundScript.create({ data: { id: snapshot.id, ...this.scope(p), ...this.data(snapshot) } }));
       });
-    });
+    }));
   }
 
   get(principal: ExecutionPrincipal, scriptId: string): Promise<Outcome<ScriptSnapshot>> {
@@ -144,7 +156,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
   }
 
   update(principal: ExecutionPrincipal, scriptId: string, expectedRevision: number, replacement: ScriptDefinition): Promise<Outcome<ScriptSnapshot>> {
-    return this.outcome(async () => {
+    return this.changed(principal, this.outcome(async () => {
       const p = await this.authenticate(principal);
       const scriptKey = id.parse(scriptId); const expected = revision.parse(expectedRevision);
       if (expected === 2_147_483_647) throw new PersistenceFailure('VERSION_CONFLICT');
@@ -160,11 +172,11 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
         if (!changed.count) throw new PersistenceFailure('VERSION_CONFLICT');
         return this.snapshot(row);
       });
-    });
+    }));
   }
 
   remove(principal: ExecutionPrincipal, scriptId: string, expectedRevision: number): Promise<Outcome<null>> {
-    return this.outcome(async () => {
+    return this.changed(principal, this.outcome(async () => {
       const p = await this.authenticate(principal); const scriptKey = id.parse(scriptId); const expected = revision.parse(expectedRevision);
       return this.prisma.$transaction(async tx => {
         await this.authenticate(p, tx);
@@ -175,7 +187,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
         }
         return null;
       });
-    });
+    }));
   }
 
   /** Capture exactly the snapshot identified by this receipt. */
