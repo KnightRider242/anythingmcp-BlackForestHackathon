@@ -1,136 +1,242 @@
-# CODEBOUND authorized connector gateway
+# CODEBOUND — AnythingMCP codebase and architecture guide
 
-Milestone 3 implements the approved gateway interface without adding an API, MCP
-registration, persistence, UI or marketplace installation. Import
-`CodeboundGatewayModule` from future lifecycle integration; it is not registered
-in `AppModule` by this branch. The shared contract is unchanged.
+> **Status (2026-10-17):** Reference and onboarding document. Verified against source on `feat/codebound-lifecycle` after commit `844304e`. This is a codebase map, **not** a claim that CODEBOUND works end to end. **Milestones 1–3 are implemented on separate development branches as prototypes**, but the runner and gateway are not yet wired into a complete application. Read [SANDBOX.md](SANDBOX.md) and [GATEWAY.md](GATEWAY.md) for implementation and security details. Paths are repository-relative.
 
-## Existing integration map
+## 1. What we're building
 
-| Existing file | Entry point and reason for reuse or exclusion |
-| --- | --- |
-| `packages/backend/src/mcp-server/mcp-server.service.ts` | `registerConnectorTools`, `registerMcpTool`, `resolveCallScope`: existing registration and endpoint authorization; not a standalone gateway. |
-| `packages/backend/src/mcp-server/tool-registry.ts` | `getTool`, `getToolForOrg`: runtime name lookup and configuration snapshots; gateway instead queries live exact IDs. |
-| `packages/backend/src/mcp-server/dynamic-mcp-tools.ts` | `executeTool`: depends on endpoint scope/roles and uses the existing connector response cache. Not called or changed. |
-| `packages/backend/src/connectors/connectors.service.ts` | `executeConnectorCall` lacks the gateway's complete authorization/deadline contract; only `getDecryptedAuthConfig` is reused. |
-| `packages/backend/src/connectors/engines/rest.engine.ts` | `execute`, `executeWithMeta`, `injectAuth`, `requestWithRetry`: broad mappings, retries, refresh flows and fixed timeout; no per-call abort/byte-cap contract. Not changed. |
-| `packages/backend/src/common/outbound-http.ts` | `outboundRequest`: reused SSRF/DNS protection and HTTP transport. Gateway disables redirects, proxy environment and retries. |
-| `packages/backend/src/roles/roles.service.ts` | `getAllowedToolIds`: null remains unrestricted within caller scope; an empty list denies every tool. |
-| `packages/backend/src/mcp-servers/mcp-connection-grant.service.ts` | `resolve`: null preserves legacy/no-grant behavior, mode:none denies. Live server/organization grants narrow access. |
-| `packages/backend/src/auth/jwt.strategy.ts` | `validate`: authenticates dashboard users using active memberships and revocation. |
-| `packages/backend/src/auth/mcp-combined-auth.guard.ts` | `canActivate`: existing MCP authentication; future integration must construct principals from verified user JWTs only, excluding static/anonymous/API-key paths in this MVP. |
-| `packages/backend/src/mcp-server/mcp-endpoint.controller.ts` | `attachVisibleTools`, `handleMcpRequest`, `planToolSet`: existing grant/server/role scoping. Future integration must derive server/client IDs from trusted request context, not tool arguments. |
+**AnythingMCP** already connects MCP clients/AI assistants with external systems through managed connectors and tools. **CODEBOUND** adds a controlled way to create, save, edit, delete, and execute reusable scripts that work with those existing tools, reduce returned data, and can themselves be exposed as MCP tools.
 
-## Authorization and execution
+Core challenge outcomes:
+1. Manage the script lifecycle and expose saved scripts as callable MCP tools.
+2. Allow authorized connector operations without revealing credentials or pushing intermediate datasets through the LLM context.
+3. Install connector-associated scripts from the existing marketplace.
+4. Execute untrusted scripts in a confined environment with tenant isolation, network/host restrictions, and resource limits.
 
-`BoundReadAuthorization.authorize` runs at session open and again on every call.
-It checks token expiry/revocation, active organization membership, script snapshot
-owner and organization, live connector owner/organization/active state, exact tool
-ID and enabled state, REST GET, supported static authentication, role access,
-active MCP server/connector attachment, connection grants and existing license checks.
-Owner-only access is an MVP restriction, not a final marketplace ownership model.
-License checks precede authorization reads; membership, token revocation and the
-executable definition are read after asynchronous role/grant work. This prevents
-executing a definition captured before those checks or retaining authorization
-across a pending license check.
+Keep existing AnythingMCP infrastructure. Do **not** implement a new integration platform or introduce an LLM into deterministic script execution.
 
-These reads are not an atomic revocation barrier. A role/grant/membership change
-committed after its corresponding read (including during DNS or an active HTTP
-request) can race one already-authorizing call, bounded by the execution deadline.
-Strict immediate revocation needs coordination with authorization mutators and
-active-session cancellation; it is not provided by this gateway. Subsequent calls
-revalidate, and an open session alone never preserves a positive authorization.
+### MVP agreement
 
-`fingerprintReadTool` hashes canonical execution-affecting tool and connector
-configuration, including nested mappings and credential configuration. Future
-lifecycle approval must obtain this digest from a trusted live row. Editing or
-rotating that configuration invalidates the approved binding; reapproval is needed.
-No registry/name fallback is allowed. The digest alone is not approval: an upstream
-API can implement writes behind GET, so the trusted lifecycle must select a known
-read operation. Method-override headers and query parameters are explicitly denied.
+- One saved JavaScript `async function main(input, api)`.
+- One explicitly bound connector and backend-approved **REST GET** tool; at most **one** connector call per run.
+- Authenticated, owner-only initial workflow; 16 KiB maximum output JSON.
+- Direct per-server MCP integration first; shared/global MCP exposure later.
+- One real working connector and a measurable compact result.
+- Marketplace-associated script installation remains an official requirement, even if sequenced after end-to-end execution.
+- A single call does **not** establish pagination, streaming, or complete coverage of large datasets.
 
-`AuthorizedConnectorGatewayService` validates/copies principals and freezes script
-snapshots. An opaque in-memory capability binds the principal, snapshot, abort
-signal, deadline and response limit. Call budget is reserved synchronously before
-awaiting authorization, so concurrent/malformed attempts cannot obtain a second
-operation. Duplicate execution IDs are denied until their deadline. Execution IDs
-must be unique and server-generated by lifecycle code. `close` invalidates the
-capability and aborts active HTTP; always call it in a finally block.
+## 2. Repository map
 
-`BoundRestExecutor` is a restricted trusted adapter, not a new connector type. It
-uses existing decryption, interpolation, tool parameter conversion and guarded HTTP.
-It accepts HTTPS GET only, with NONE, BEARER_TOKEN, API_KEY or BASIC_AUTH. OAuth,
-LOGIN_TOKEN, other engines, proxy-enabled tools, body mappings, absolute paths,
-untrusted path separators, dynamic headers and non-scalar query values fail closed.
-The existing parameter converter covers basic types/enums/defaults; it does not
-implement every JSON Schema keyword. Response data is checked against the shared
-plain-JSON reply validator, not arbitrary connector output JSON Schemas.
+| Location | Responsibility | CODEBOUND impact |
+| --- | --- | --- |
+| `packages/frontend/src/app/` | Next.js App Router screens | Add script management screen |
+| `packages/frontend/src/lib/api.ts` | Typed frontend HTTP request helpers | Add script CRUD/run client methods |
+| `packages/frontend/src/components/app-sidebar.tsx` | Dashboard navigation | Link Scripts page |
+| `packages/backend/src/app.module.ts` | NestJS application module composition | Register future CODEBOUND module |
+| `packages/backend/src/auth/` | JWT/MCP authentication and user identity | Construct trusted execution principal |
+| `packages/backend/src/roles/roles.service.ts` | Role-to-tool permission checks | Recheck each script-initiated tool operation |
+| `packages/backend/src/mcp-servers/` | MCP server configurations, sessions and connection grants | Enforce server scope and client grants |
+| `packages/backend/src/mcp-server/` | Dynamic tool registry, MCP endpoint exposure and invocation | Register and invoke saved scripts |
+| `packages/backend/src/connectors/` | Connector CRUD, credentials, execution engines, response shaping | Reuse via trusted connector gateway |
+| `packages/backend/src/adapters/` | Built-in connector catalog and installation | Extend installations with script templates |
+| `packages/backend/prisma/schema.prisma` | PostgreSQL models managed by Prisma | Future Script/ScriptRun models (issue first) |
+| `packages/backend/src/common/` | Prisma/Redis/deployment/HTTP safeguards | Reuse relevant services |
+| `packages/backend/src/codebound/` | Project-owned CODEBOUND module area | Contracts plus independently developed `sandbox/` and `gateway/` modules; not wired end to end |
+| `deploy/codebound/` | Sandbox Dockerfile, JavaScript bootstrap, and PID 1 watchdog | Exists on `feat/codebound-sandbox`; integration is pending |
 
-Sandbox IPC contains only the fixed read binding, request ID and arguments. It
-cannot select a user, organization, tool, connector, URL, headers or credentials.
-Decrypted configuration never crosses the backend boundary. Known credential
-echoes in response keys or values are rejected, including common encoded forms.
-The scan includes static Bearer/Basic header components, decoded Basic credentials,
-individual cookies and credential-named query values, as well as decrypted values.
-This deliberately conservative check may reject benign responses mentioning a
-connector environment value; it cannot prove absence of arbitrary secret encodings.
-Errors are fixed messages and no source/credential-bearing diagnostics are logged.
+### Technologies already in use
 
-## Bounds and cancellation
+- Backend: **NestJS + TypeScript**.
+- Frontend: **Next.js + React + TypeScript**.
+- Persistence: **PostgreSQL + Prisma**.
+- Optional infrastructure: **Redis** (caching/counters; not proof of an existing durable job queue).
+- Connector engines: **REST, GraphQL, SOAP, database, upstream MCP, OData**.
+- Validation/testing: **Zod**, **class-validator**, **Jest**; frontend has ESLint, TypeScript and Playwright.
+- Docker Compose is used for app/database development and deployment. It is **not itself a secure untrusted-code sandbox**.
 
-The adapter performs one HTTP request with no retry, redirect or existing Redis
-cache access, regardless of stored cacheTtl. The existing cache bug is not fixed
-or touched here; an independent cache repair/regression remains separate work.
-Axios receives the execution signal, remaining deadline and maxContentLength.
-CODEBOUND creates guarded agents without proxy-host exemptions and destroys them
-after each operation. The shared outbound helper checks cancellation again after
-asynchronous DNS/policy checks, before entering the native HTTP adapter.
-The existing operator SSRF settings still apply: allowlisted hosts, allowed private
-ranges or a disabled guard are explicit exceptions to public-address protection.
-Disabling TLS verification through the Node environment also defeats normal TLS
-assurances. Sandbox IPC cannot set these process-level policies.
-Decompressed transport data and serialized reply JSON are bounded to at most
-512 KiB (or a lower caller policy). The sandbox independently caps final output
-at 16 KiB. A single call makes no pagination, streaming or completeness guarantee.
+## 3. Understand three different objects
 
-Authorization promises are raced against cancellation/deadline. Existing Prisma,
-role/grant/license reads and SSRF DNS lookups do not expose cancellation and may
-finish later. No HTTP is dispatched after the abort check; native Axios transport
-receives the aborted signal if cancellation occurs during DNS resolution. Closing
-a session and token expiry also abort the request. No OAuth refresh or login
-operation is started by this adapter.
+- **Connector:** one configured integration (for example, a Todoist connection), including trusted service configuration and credentials. It belongs to an organization.
+- **Tool:** one operation on a connector (for example, fetch active tasks). The tool has a name, parameter schema, connector ID, mapping and permissions.
+- **CODEBOUND script (planned):** saved source plus input/output schemas and an **exact permitted tool binding**. It may invoke only that approved tool through a gateway. It must not receive the connector's decrypted configuration.
 
-There is no script table on this branch. Script ownership is checked against the
-immutable trusted snapshot; lifecycle deletion/revocation must close the session.
-The gateway does not verify JWT signatures itself: that remains the existing auth
-guards' responsibility. Do not construct ExecutionPrincipal from client JSON.
+**Do not confuse a saved script with an existing connector tool**. Saved-script discovery, invocation, refresh and persistence must be added explicitly.
 
-Cloud and self-hosted use the same authorization/limits and existing
-LicenseGuardService behavior; no EE changes or Cloud operator procedures are added.
-Sessions are process-local, with no fleet-wide admission control or persistence.
-Per-execution audit persistence is not added; lifecycle integration must supply it.
-Marketplace-installed scripts remain in project scope for a later milestone.
+## 4. Existing connector tool flow — source-verified entry points
 
-## Reproduce
+### 4.1 Tool registration
 
-From `packages/backend` with locked dependencies and the existing generated
-Prisma client:
+1. `packages/backend/src/mcp-server/mcp-server.service.ts`: `McpServerService.loadAllTools()`, `registerConnectorTools()` and `reloadConnectorTools()` load/reload configured tools.
+2. `packages/backend/src/mcp-server/tool-registry.ts`: `ToolRegistry.registerTool()`, `getTool()`, `getToolForOrg()` and `getListableTools()` hold registered metadata, organization and connector mappings.
+3. `McpServerService.registerMcpTool()` attaches tool handlers to MCP infrastructure. The registry includes decrypted connector configuration in **trusted backend memory**; never forward it into untrusted script execution.
 
-```powershell
-npm test -- --runInBand codebound/contracts.spec.ts codebound/gateway/gateway.spec.ts codebound/gateway/rest-transport.spec.ts common/outbound-http.spec.ts roles/roles.service.spec.ts mcp-servers/mcp-connection-grant.service.spec.ts adapters/catalog.spec.ts
-npx tsc --noEmit --incremental false -p tsconfig.json
-npx eslint src/codebound/gateway/*.ts src/common/outbound-http.ts
+### 4.2 MCP entry points
+
+- `packages/backend/src/mcp-server/mcp-endpoint.controller.ts`, `handleGlobalPost()`: shared `/mcp`; tool visibility is scoped for the invoking caller.
+- `packages/backend/src/mcp-server/shared-toolset.ts`, `registerSharedToolset()`: fixed shared tools such as `anythingmcp_search_tools`, `anythingmcp_describe_tool`, `anythingmcp_run_read_tool` and `anythingmcp_run_write_tool`. The shared list is not the same as all workspace connector tools.
+- `McpEndpointController.handleMcpRequest()`: `/mcp/:serverId` per-server MCP endpoint, using server-scoped tool planning, including `planToolSet()`.
+- `packages/backend/src/mcp-server/dynamic-mcp-tools.ts`, `DynamicMcpTools.executeTool()`: resolves a registered tool, handles configuration, cache/audit/engine dispatch and output rendering; `executeWithEngine()` chooses the engine, `renderResult()` prepares MCP content.
+
+### 4.3 Connector execution
+
+- `packages/backend/src/connectors/connectors.service.ts`, `executeConnectorCall()`: a **second** execution path used for connector testing/installation probes; do **not** assume it independently implements all per-user MCP authorization.
+- `packages/backend/src/connectors/engines/rest.engine.ts` dispatches REST requests and injects configured auth; `mcp-client.engine.ts` calls upstream MCP; there are additional GraphQL/SOAP/database/OData engines.
+- `packages/backend/src/connectors/response-transform.util.ts` supports existing response transformations/JMESPath and optional output-byte limits. It transforms data **after retrieval**; it is not a generic streaming or multi-page engine.
+
+**Important:** Authentication, authorization, registration, connector execution and response shaping are separate concerns. Calling an engine directly from sandbox code would bypass the required checks.
+
+## 5. Existing authorization and security model
+
+- `auth/jwt.strategy.ts`: validates JWTs and derives authenticated dashboard user/organization context.
+- `auth/mcp-combined-auth.guard.ts`: supports multiple MCP auth modes, including user keys, JWT and configured instance/static modes. **The initial CODEBOUND slice supports only authenticated user JWT flows**; reject unsupported identityless/static calls.
+- `roles/roles.service.ts`, `getAllowedToolIds()`: resolves allowed tool IDs, with `null` and `[]` carrying different meanings (unrestricted vs denied).
+- `mcp-servers/mcp-connection-grant.service.ts`, `resolve()`: rechecks selected org/server access; a grant that resolves to no tools must **not** become unrestricted.
+- `mcp-server/mcp-server.service.ts`, `resolveCallScope()`, and `mcp-endpoint.controller.ts`: restrict MCP execution surfaces.
+- `common/caller-context.util.ts`: reserved identity variables supplied by trusted backend code.
+- `common/prisma.service.ts`, `tenantTx()`, plus optional RLS scripts: tenant-supporting infrastructure; **do not assume PostgreSQL RLS is deployed/enabled**.
+
+Permissions must be checked for script CRUD/list/get, run/start/result, and **every** connector call. Do not authorize solely using the script author's permissions. Scripts gain no rights beyond the invoking principal.
+
+Connector credentials are attached to configured connector records; this does **not** imply a separate upstream OAuth identity for each caller. For the initial personal-connector demo, keep the stricter owner-only policy.
+
+### Cache isolation issue reported by Codex
+
+`DynamicMcpTools.buildCacheKey()` has been reported to construct keys from tool name + serialized argument hash without organization/connector/caller separation; nested object serialization may also omit differences. Codex ran a synthetic extracted-method probe, **not a complete live cross-tenant exploit**. Before enabling shared connector caching for CODEBOUND:
+- Add a same-name, cross-tenant, nested-argument regression test using a shared in-memory Redis mock.
+- Fix cache namespace and canonicalization, including caller/config-dependent separation or bypass as appropriate.
+- CODEBOUND's MVP connector gateway **bypasses connector result caching** until the fix is independently tested.
+
+## 6. Marketplace integration
+
+- `packages/backend/src/adapters/catalog.ts`: `AdapterDefinition` describes built-in connector templates and their tools; currently **no scripts field**.
+- `packages/backend/src/adapters/adapters.service.ts`, `importAdapter()`: creates configured connector/tool records and reloads registration.
+- `packages/backend/src/adapters/adapters.controller.ts`: import endpoint, role and plan checks.
+- `packages/frontend/src/app/connectors/setup/[slug]/page.tsx`: connector installation setup UI, calling the adapter API in `frontend/src/lib/api.ts`.
+- `scripts/validate-adapters.mjs`: adapter catalog validation.
+
+**Planned addition:** associate script templates with catalog entries and install them within the service-level import path **after real connector/tool IDs exist**. Bind to those exact newly created IDs, not a name-matched connector in another installation. Establish separate marketplace ownership rules rather than silently reusing personal-script author privileges.
+
+## 7. CODEBOUND target end-to-end flow (NOT integrated yet)
+
+```mermaid
+flowchart TD
+    A[Authenticated dashboard or MCP client] --> B[Script lifecycle service]
+    B --> C[Load immutable script snapshot]
+    C --> D[Open trusted authorization gateway]
+    D --> E[Sandbox supervisor]
+    E --> F[Disposable isolated JS process]
+    F -->|api.read arguments only| E
+    E --> D
+    D --> G[Revalidate caller and exact tool permission]
+    G --> H[Existing connector engine]
+    H -->|bounded response| D
+    D --> E
+    F -->|bounded validated JSON| E
+    E --> B
+    B --> I[Compact HTTP or MCP result]
 ```
 
-`gateway.spec.ts` mocks database/auth services and the outbound HTTP function.
-`rest-transport.spec.ts` uses the real executor, outbound adapter, Axios, local TLS
-servers and sockets. Only DNS answers and test-agent CA trust are controlled;
-TLS verification remains enabled and has a negative test. Its checked-in PEM
-certificate/key are public localhost-only test fixtures, never application secrets.
-The suite covers proxy-host rebinding, private addresses, redirects, compressed
-byte caps, unsafe JSON, credential echoes, pre-dispatch cancellation and active
-socket closure. No OpenSSL installation is needed to run it. Tests have run on
-Windows; Linux and macOS execution remain unverified. Fixture paths use node:path.
-No real provider, database, full Nest application, sandbox or container is exercised.
-From the repository root run `node scripts/validate-adapters.mjs --warn` for catalog
-checks. Local transport tests require permission to open loopback sockets.
+Security and trust boundaries:
+1. HTTP/MCP callers supply script ID, expected revision and JSON arguments, **not** user/org/source/credentials/limits.
+2. Backend loads frozen source + approved binding, derives principal from authentication, enforces live authorization and owns run metrics.
+3. Script sees only `input` and `api.read(arguments)`. Its IPC frame has no arbitrary tool ID, hostname, auth configuration or execution-principal fields.
+4. Trusted gateway maps the IPC request to the **one** stored tool and rechecks membership, ownership, roles, grants, server attachment, enabled state and definition fingerprint **on each call**.
+5. Runner uses disposable isolated execution with no network or host secrets/mounts/socket, enforced deadline/memory/CPU/process/output limits. A Docker application container is **not** equivalent to this isolation.
+6. Returned JSON is validated against size/type **and the saved output JSON Schema** (semantic output-schema validation is still pending). Errors are sanitized and bounded.
+7. Store bounded run metadata and expose saved scripts as MCP tools using the **same authorization and execution path**.
+
+### CODEBOUND implementation milestones (current branch status)
+
+| File | Implemented now |
+| --- | --- |
+| `packages/backend/src/codebound/contracts.ts` | Types for lifecycle, runner, trusted gateway, JSON/IPC and error/limit policy |
+| `packages/backend/src/codebound/contracts.validation.ts` | Strict Zod validators, public HTTP DTO, UTF-8 bounds and detached/frozen snapshots |
+| `packages/backend/src/codebound/contracts.spec.ts` | 29 passing test cases as run by the developer |
+| `packages/backend/src/codebound/README.md` | Detailed trust-boundary and validator notes |
+
+Verified GitHub commit: `844304e7a81b7c8a1a6e3e84406097ad859ee086` on `feat/codebound-lifecycle`. The developer ran `npm test -- --runInBand codebound/contracts.spec.ts` (29/29 passed) and `npx tsc --noEmit --incremental false -p tsconfig.json` (no errors). **Milestone 2:** `DockerSandboxRunner` and disposable Docker isolation now exist on this branch, with reported 61 passing CODEBOUND tests (including 18 live Docker tests) and a security review; see [SANDBOX.md](SANDBOX.md). **Milestone 3:** `AuthorizedConnectorGatewayService`, `BoundReadAuthorization`, and `BoundRestExecutor` are implemented on `feat/codebound-mcp` and reviewed in GitHub commit `729c8a5db6e2a88ff57607cfd99c1c4193c4e8db`. The gateway restricts execution to a single approved HTTPS REST GET tool, rechecks permissions per operation, limits responses, and keeps credentials in the trusted backend. The developer reported **9,058 passing tests** across seven suites, including gateway and real local HTTPS transport tests; these were not independently rerun. See [GATEWAY.md](GATEWAY.md).
+
+**Still missing:** sandbox-to-gateway wiring, full backend registration, durable persistence, authenticated HTTP routes, dynamic MCP script tools, UI and marketplace script installation. Neither real provider credentials nor full NestJS startup have been exercised. This is not an end-to-end CODEBOUND implementation.
+
+### Verified development milestones and known limits
+
+| Milestone | State | Evidence and remaining work |
+| --- | --- | --- |
+| **1. Shared contracts** | Complete | Commit `844304e`; 29 locally passing contract tests and backend TypeScript check. |
+| **2. Isolated sandbox** | Prototype complete | Commit `4dab130` on `feat/codebound-sandbox`; disposable Docker runner and PID 1 watchdog; 61 locally reported passing tests, including 18 live Docker tests. No application registration. |
+| **3. Authorized connector gateway** | Prototype complete | Commit `729c8a5` on `feat/codebound-mcp`; owner/org/role/server/grant authorization, restricted HTTPS GET, independent one-call reservation, bounded responses. 9,058 locally reported tests passed in selected suites. Not connected to sandbox or real connector account. |
+| **4. Persisted script lifecycle** | Not yet implemented | Open issue before Prisma modifications; organization-scoped CRUD, revision enforcement, audited execution and HTTP routes. |
+| **5. MCP tools + UI** | Not yet implemented | Script tool registration, frontend scripts page and execution results. |
+| **6. Marketplace scripts + integrated demo** | Not yet implemented | Bind installed scripts to exact imported connector/tool IDs; demonstrate one live provider and security tests. |
+
+**Security caveats:** instantaneous mid-flight permission revocation is not guaranteed; SSRF operator allowlist exceptions require deployment review; credential-echo detection does not cover arbitrary transformations. Linux and macOS hosts are not independently tested yet. Containers share a kernel and recovery/reconciliation after supervisor crashes remains to be implemented. Keep these caveats visible in demos and documentation.
+
+## 8. Implementation order and team responsibilities
+
+All four branches began at `main`; share the contract commit before coding. Keep branch work scoped.
+
+| Branch | Build | First proof |
+| --- | --- | --- |
+| `feat/codebound-lifecycle` | Script storage/CRUD, versioning, run orchestration/API; owns shared contracts | Create/update, reject stale revision, organization-scoped read |
+| `feat/codebound-sandbox` | Runner supervisor, disposable isolation and bounded IPC | Execute synthetic script; deny network/host; kill infinite loop |
+| `feat/codebound-mcp` | Authorized connector gateway, cache fix tests, script MCP exposure, marketplace integration | Deny unauthorized tool before engine dispatch; invoke one saved script |
+| `feat/codebound-ui` | Scripts listing/editor/run view and API client | CRUD/run UI against agreed contract/fixtures |
+
+Integration order: **contracts → sandbox + gateway in parallel → persisted HTTP run → per-server MCP exposure → UI integration → marketplace script installation**. Keep marketplace in the delivery checklist. Do not present synthetic-only execution as live connector integration.
+
+### Early decisions still unresolved
+
+- Runner supervisor topology and secure availability on all deployments.
+- Exact endpoint fingerprint construction and cancellation propagation to the REST engine.
+- Script/run Prisma tables and migrations (issue must be opened first).
+- Full output JSON Schema interpretation and validation.
+- Marketplace ownership and reinstall/uninstall/version semantics.
+- How scripts appear through the shared fixed-toolset `/mcp` endpoint.
+- Real connector response shape, paging, and dataset completeness.
+
+## Cross-platform requirement (Windows, Linux, macOS)
+
+CODEBOUND must run on **Windows, Linux, and macOS hosts** using a **Linux-container sandbox**. The sandbox is not a native Windows/macOS executable: it depends on Linux namespaces, seccomp, cgroups, and a Linux PID 1 watchdog. Supported host deployment paths are Docker Desktop with WSL 2/Linux containers on Windows, Docker Engine on Linux, and Docker Desktop's Linux VM on macOS (Intel or Apple Silicon). A working Docker daemon, Linux containers, compatible image architecture, and the repository's Node.js prerequisites are mandatory. If unavailable, execution must fail closed, never fall back to native JavaScript evaluation.
+
+**Validation status:** real live-container tests were reported on Windows with Docker Desktop/Linux containers; separate native-Linux and macOS validation is still **pending**. Before declaring cross-platform support verified, run the same live suite on Windows, native Linux, and macOS (including arm64), test daemon-unavailable behavior and cleanup, and verify Docker endpoint configuration without hardcoded host socket paths. See [SANDBOX.md](SANDBOX.md).
+
+## 9. How to run and test locally
+
+Follow **root `AGENTS.md`** and `.github/CONTRIBUTING.md` first.
+
+- Node.js **>=22.12**, npm **>=9**, Docker Compose.
+- From root: `./setup.sh` (setup generates local env and handles DB/migrations); development database defaults to PostgreSQL host port **5433**.
+- Start app: `npm run dev` at repo root; frontend `http://localhost:3000`, backend `http://localhost:4000`.
+- Do not commit `.env` or raw credentials.
+- Backend checks, from `packages/backend`:
+  ```bash
+  npm test -- --runInBand codebound/contracts.spec.ts
+  npx tsc --noEmit --incremental false -p tsconfig.json
+  npx eslint src/codebound/*.ts
+  ```
+- For broader verification: backend `npm test`, `npm run lint` (review auto-fixes); adapter validation `node scripts/validate-adapters.mjs --warn` from repo root.
+- Frontend: `npm run lint`, `npx tsc --noEmit -p tsconfig.json` from `packages/frontend`; Playwright per project instructions.
+- If VS Code marks `describe`, `it`, `expect`, `jest` red while Jest and backend `tsc` pass, check the active VS Code TypeScript project/workspace version before changing dependencies.
+
+## 10. Repository and licensing rules
+
+- Read root and nested `AGENTS.md`, `.github/CONTRIBUTING.md`, `LICENSING.md`, `packages/backend/src/ee/README.md`, `docs/license-faq.md`.
+- **Never modify any `ee/` directory**. CODEBOUND additions outside those directories use AGPL-3.0-only.
+- **Open an issue before Prisma schema changes**; review migrations.
+- Enforce `organizationId` on every tenant-scoped query; validate DTOs; no raw secrets in logs or untrusted processes.
+- Use a focused feature branch and pull requests; review resulting diffs.
+- `docs/CODEBOUND_CONTEXT.md` is intentionally ignored by `.gitignore` and remains local. This architecture guide is tracked and shareable with teammates.
+
+## 11. Suggested reading order for a new team member
+
+1. `AGENTS.md` — setup, license and safety rules.
+2. **This guide** — mental model and code navigation; read [SANDBOX.md](SANDBOX.md) for runner details and [GATEWAY.md](GATEWAY.md) for gateway authorization and real transport tests.
+3. `packages/backend/src/mcp-server/tool-registry.ts` — what a registered tool contains.
+4. `packages/backend/src/mcp-server/mcp-server.service.ts` — tool registration.
+5. `packages/backend/src/mcp-server/mcp-endpoint.controller.ts` and `shared-toolset.ts` — MCP exposure.
+6. `packages/backend/src/mcp-server/dynamic-mcp-tools.ts` — existing tool execution.
+7. `packages/backend/src/connectors/connectors.service.ts` and `connectors/engines/rest.engine.ts` — connector integration.
+8. `packages/backend/src/auth/`, `roles/roles.service.ts`, `mcp-servers/mcp-connection-grant.service.ts` — access control.
+9. `packages/backend/src/adapters/adapters.service.ts` and `adapters/catalog.ts` — marketplace flow.
+10. `packages/backend/src/codebound/contracts.ts` and `contracts.validation.ts` — exactly what Milestone 1 defined.
+
+**Key takeaway:** AnythingMCP already has connectors, tools, MCP and permissions. CODEBOUND now has separate sandbox and authorized-gateway prototypes; the critical next task is **wiring them to persisted, authenticated script execution**. Contracts and isolated components are not a completed end-to-end product.
