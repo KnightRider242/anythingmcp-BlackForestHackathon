@@ -24,6 +24,7 @@ import {
   usesCallerContext,
 } from '../common/caller-context.util';
 import { applyResponseTransform } from '../connectors/response-transform.util';
+import { applyProcessorChain } from '../connectors/processor-chain.util';
 import {
   attachResponseMeta,
   type ResponseMeta,
@@ -474,6 +475,10 @@ export class DynamicMcpTools {
         secretValues.filter((value) => !/^\d+$/.test(value)),
         { patterns: false },
       );
+      // Fail the invocation (and audit it as ERROR) before caching or logging
+      // success when a configured processor rejects the upstream document.
+      // The renderer applies the same chain for cached and uncached results.
+      applyProcessorChain(result, responseMapping);
 
       const durationMs = Date.now() - startTime;
 
@@ -615,7 +620,20 @@ export class DynamicMcpTools {
     isError?: boolean;
     structured?: unknown;
   } {
-    const outcome = applyResponseTransform(raw, responseMapping);
+    let processed: unknown;
+    try {
+      // Run the declarative chain BEFORE response mapping, on every path
+      // (including cache hits). Broken processor input must never fall back
+      // to the raw connector response.
+      processed = applyProcessorChain(raw, responseMapping);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid processor data';
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: `Processor chain failed: ${message}` }) }],
+        isError: true,
+      };
+    }
+    const outcome = applyResponseTransform(processed, responseMapping);
 
     if (outcome.error) {
       if (outcome.fatal) {

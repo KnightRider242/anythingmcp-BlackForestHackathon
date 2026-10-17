@@ -39,6 +39,7 @@ import {
 } from './response-transform.util';
 import { validateDecode } from './mime-decode.util';
 import { validateImages } from './response-images.util';
+import { validateProcessorChain } from './processor-chain.util';
 import {
   ToolAnnotations,
   deriveToolAnnotations,
@@ -352,6 +353,12 @@ export class ToolsController {
     const imagesError = validateImages((responseMapping as Record<string, unknown>).images);
     if (imagesError) {
       throw new BadRequestException(`Invalid response mapping: ${imagesError}`);
+    }
+    const processorError = validateProcessorChain(
+      (responseMapping as Record<string, unknown>).processorChain,
+    );
+    if (processorError) {
+      throw new BadRequestException(`Invalid processor chain: ${processorError}`);
     }
     const transform = (responseMapping as Record<string, unknown>).transform;
     if (transform === undefined || transform === null) return;

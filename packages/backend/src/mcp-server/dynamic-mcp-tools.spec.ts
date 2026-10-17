@@ -646,3 +646,49 @@ describe('DynamicMcpTools: the connector id reaches the engine', () => {
     expect(mcpClientEngine.execute.mock.calls[0][0].connectorId).toBeUndefined();
   });
 });
+
+
+describe('CODEBOUND processor chains in MCP tool execution', () => {
+  const processorChain = {
+    itemsField: 'items',
+    steps: [
+      { operation: 'multiply', input: 'price_usd', output: 'price_eur', factor: 0.92, decimals: 2, mode: 'add' },
+      { operation: 'multiply', input: 'price_eur', output: 'price_eur_gross', factor: 1.19, decimals: 2, mode: 'add' },
+      { operation: 'normalizeWhitespace', input: 'description', output: 'description', mode: 'replace' },
+    ],
+  };
+  const offers = { items: [{ itemNo: 'A-1', price_usd: 10, description: '  Black    Screw ', moq: 5 }] };
+
+  it('runs the configured chain before the existing mapping for fresh calls', async () => {
+    const tool = makeTool({
+      processorChain,
+      transform: { select: { rows: '$.items' } },
+    });
+    const { executor } = build(tool, { engineResult: offers });
+    const res = await executor.executeTool('list_devices', {});
+    expect(res.isError).toBeUndefined();
+    expect(JSON.parse(res.content[0].text)).toEqual({
+      rows: [{ itemNo: 'A-1', price_usd: 10, description: 'Black Screw', moq: 5, price_eur: 9.2, price_eur_gross: 10.95 }],
+    });
+    expect(offers.items[0]).not.toHaveProperty('price_eur');
+  });
+
+  it('rejects invalid prices instead of returning raw data, and audits an error', async () => {
+    const { executor, audit } = build(makeTool({ processorChain }), {
+      engineResult: { items: [{ itemNo: 'A-X', price_usd: 'n/a', description: 'broken' }] },
+    });
+    const res = await executor.executeTool('list_devices', {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('price_usd');
+    expect(audit.logInvocation).toHaveBeenCalledWith(expect.objectContaining({ status: 'ERROR' }));
+  });
+
+  it('runs chains on cached raw responses as well', async () => {
+    const { executor } = build(makeTool({ cacheTtl: 90, processorChain }), {
+      cached: JSON.stringify(offers),
+    });
+    const res = await executor.executeTool('list_devices', {});
+    expect(res.isError).toBeUndefined();
+    expect(JSON.parse(res.content[0].text).items[0].price_eur_gross).toBe(10.95);
+  });
+});
