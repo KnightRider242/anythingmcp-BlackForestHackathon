@@ -5,6 +5,12 @@ adapter is `sandbox/docker-sandbox-runner.ts`; it is not registered in NestJS
 and exposes no HTTP/MCP endpoint. Persistence, real connector authorization,
 UI and marketplace installation are separate delivery steps.
 
+## Cross-platform host support
+
+**Requirement:** the AnythingMCP application and CODEBOUND sandbox must operate on Windows, Linux and macOS hosts by running the **same Linux-container image**. Windows requires Docker Desktop with WSL 2/Linux container mode; Linux uses Docker Engine; macOS uses Docker Desktop with its Linux VM. The watchdog and sandbox's kernel constraints intentionally remain Linux-specific inside the container; running them directly as native Windows/macOS processes is **not supported**. Native fallback must never be offered when Docker is missing.
+
+Image availability must be checked on both amd64 and arm64 host architectures, especially Apple Silicon. Linux seccomp/cgroup enforcement, no mounts/network, Docker endpoint configuration, cancellation, and cleanup need validation across supported Docker setups. **Current evidence:** live tests on Windows via Linux Docker Desktop; native Linux and macOS (including arm64) are not independently verified. Cross-platform coverage is a remaining test milestone, not a claimed result.
+
 ## Reproduce (PowerShell)
 
 From the repository root, with Node >=22.12, locked dependencies installed,
@@ -26,6 +32,20 @@ Ordinary `npm test -- --runInBand codebound/sandbox/docker-sandbox-runner.spec.t
 runs supervisor boundary tests without Docker. No database is used by these tests.
 The full backend typecheck requires the existing generated Prisma client;
 generating it does not require schema changes or running migrations.
+
+### Linux / macOS shell equivalent
+
+From the repository root, after building the image and installing dependencies:
+
+```bash
+docker build -f deploy/codebound/Dockerfile -t codebound-sandbox:mvp .
+cd packages/backend
+RUN_CODEBOUND_SANDBOX_LIVE=1 npm test -- --runInBand codebound/contracts.spec.ts codebound/sandbox
+npx tsc --noEmit --incremental false -p tsconfig.json
+npx eslint 'src/codebound/sandbox/*.ts'
+```
+
+These instructions describe how to run the checks; they are not evidence of execution on every platform.
 
 ## Execution and trust
 
