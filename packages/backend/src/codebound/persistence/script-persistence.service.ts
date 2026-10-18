@@ -284,6 +284,43 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
     return null;
   }
 
+  /**
+   * Owner-scoped execution history. Return only receipt metadata: never connector
+   * arguments, script source, upstream response bodies, credentials or run output.
+   * The cursor must belong to the authenticated owner before it can be used.
+   */
+  listRunReceipts(principal: ExecutionPrincipal, afterId?: string) {
+    return this.outcome(async () => {
+      const p = await this.authenticate(principal);
+      const scope = { ...this.scope(p), callerUserId: p.userId };
+      if (afterId) {
+        const permittedCursor = await this.prisma.codeboundScriptRun.findFirst({
+          where: { ...scope, executionId: id.parse(afterId) }, select: { executionId: true },
+        });
+        if (!permittedCursor) throw new PersistenceFailure('NOT_FOUND');
+      }
+      const rows = await this.prisma.codeboundScriptRun.findMany({
+        where: scope,
+        ...(afterId ? { cursor: { executionId: afterId }, skip: 1 } : {}),
+        orderBy: [{ createdAt: 'desc' }, { executionId: 'desc' }],
+        take: 26,
+        select: {
+          executionId: true, originalScriptId: true, revision: true,
+          status: true, createdAt: true, startedAt: true, finishedAt: true,
+          wallTimeMs: true, connectorCalls: true, connectorResponseBytes: true,
+          outputBytes: true, errorCode: true, errorLimit: true,
+          script: { select: { name: true } },
+        },
+      });
+      return {
+        items: rows.slice(0, 25).map(({ script, ...receipt }) => ({
+          ...receipt, scriptName: script?.name ?? null,
+        })),
+        nextCursor: rows.length > 25 ? rows[24].executionId : null,
+      };
+    });
+  }
+
   getRun(principal: ExecutionPrincipal, executionId: string) {
     return this.outcome(async () => {
       const p = await this.authenticate(principal);
