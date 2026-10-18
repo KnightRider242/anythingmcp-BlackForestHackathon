@@ -1,0 +1,44 @@
+name: CODEBOUND portable setup checks
+
+on:
+  pull_request:
+    paths:
+      - setup.sh
+      - scripts/setup-codebound.sh
+      - scripts/dev-codebound.mjs
+      - docker-compose.yml
+      - docker-compose.dev.yml
+      - package.json
+      - .github/workflows/codebound-portable-setup.yml
+  push:
+    branches: [feat/codebound-portable-setup]
+
+permissions:
+  contents: read
+
+jobs:
+  installer-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Shell and launcher syntax
+        run: |
+          bash -n setup.sh
+          bash -n scripts/setup-codebound.sh
+          node --check scripts/dev-codebound.mjs
+      - name: Installer help is side-effect free
+        run: |
+          bash setup.sh --help | grep -q -- '--add-codebound'
+          test ! -e .env
+      - name: Never delete PostgreSQL volumes in installer
+        run: |
+          if grep -E '^[[:space:]]*docker compose.*down -v' setup.sh scripts/setup-codebound.sh; then
+            echo "Destructive docker compose down -v command found in installer" >&2
+            exit 1
+          fi
+      - name: Docker Compose configuration parses
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
