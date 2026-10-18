@@ -52,6 +52,10 @@ describe('DockerSandboxRunner supervisor boundaries (no Docker)', () => {
     expect(name).toMatch(/^codebound-[a-f0-9-]+$/);
     for (const flag of ['--read-only', '--pull', '--cap-drop', '--security-opt', '--pids-limit', '--memory-swap']) expect(create).toContain(flag);
     expect(create).not.toContain('--init'); // The image watchdog must be namespace PID 1.
+    expect(create.slice(create.indexOf('--tmpfs'), create.indexOf('--tmpfs') + 2)).toEqual([
+      '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=65534,gid=65534',
+    ]);
+    expect(create.filter(flag => flag === '--tmpfs')).toHaveLength(1);
     expect(create.slice(create.indexOf('--network'), create.indexOf('--network') + 2)).toEqual(['--network', 'none']);
     for (const forbidden of ['--volume', '-v', '--mount', '--env-file', '--privileged', '--publish']) expect(create).not.toContain(forbidden);
     const env = create.flatMap((value, index) => value === '--env' ? [create[index + 1]] : []);

@@ -59,6 +59,9 @@ export class DockerSandboxRunner implements SandboxRunner {
       await this.command([
         'create', '--name', name, '--label', 'codebound.sandbox=true', '--interactive', '--network', 'none',
         '--read-only', '--user', '65534:65534', '--cap-drop', 'ALL',
+        // Per-container volatile storage, charged to the existing memory cgroup.
+        // No host path/volume, executable files, devices or setuid programs.
+        '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=65534,gid=65534',
         '--security-opt', 'no-new-privileges=true', '--pids-limit', String(limits.maxProcesses),
         '--cpus', String(limits.cpuCores), '--memory', String(limits.memoryBytes),
         '--memory-swap', String(limits.memoryBytes), '--ulimit', 'nofile=64:64',

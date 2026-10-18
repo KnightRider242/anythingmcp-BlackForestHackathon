@@ -54,7 +54,10 @@ live('DockerSandboxRunner — real disposable container', () => {
         NanoCpus: 500_000_000, LogConfig: { Type: 'none' },
       });
       expect(inspection.HostConfig.SecurityOpt).toContain('no-new-privileges=true');
-      expect(inspection.Mounts).toEqual([]);
+      expect(inspection.Mounts.every((mount: { Type: string; Destination: string }) =>
+        mount.Type === 'tmpfs' && mount.Destination === '/tmp')).toBe(true);
+      expect(inspection.HostConfig.Binds ?? []).toEqual([]);
+      expect(inspection.HostConfig.Tmpfs).toEqual({ '/tmp': 'rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=65534,gid=65534' });
       expect(call.arguments).toEqual({ filter: 'open' });
       return { type: 'connector.reply' as const, requestId: call.requestId, ok: true as const, value: [{ priority: 1 }, { priority: 2 }] };
     });
@@ -64,6 +67,31 @@ live('DockerSandboxRunner — real disposable container', () => {
     }, { signal: new AbortController().signal, onConnectorCall })).toEqual({ ok: true, value: { count: 2 } });
     expect(onConnectorCall).toHaveBeenCalledTimes(1);
   }, 30_000);
+
+  it('isolates live temporary files between containers, bounds tmpfs and destroys it', async () => {
+    const path = `/tmp/private-${randomUUID()}`;
+    const result = await new DockerSandboxRunner().execute({
+      executionId: 'private-temp-A', input: { path }, limits: MVP_LIMITS,
+      source: `async function main(input, api) {
+        const fs=process.getBuiltinModule('fs'); fs.writeFileSync(input.path,'private');
+        const before=fs.readFileSync(input.path,'utf8')==='private';
+        const isolated=await api.read({});
+        let full=false; try { fs.writeFileSync('/tmp/too-large',Buffer.alloc(9*1024*1024)); }
+        catch(error) { full=error.code==='ENOSPC'; }
+        return {before,after:fs.readFileSync(input.path,'utf8')==='private',isolated,full};
+      }`,
+    }, { signal: new AbortController().signal, onConnectorCall: jest.fn(async call => {
+      // A remains alive with a verified file while B reads the identical path.
+      const other = await execute(`async function main(){try{process.getBuiltinModule('fs').readFileSync(${JSON.stringify(path)});return false;}
+        catch(error){return error.code==='ENOENT';}}`);
+      expect(other).toEqual({ ok: true, value: true });
+      return { type: 'connector.reply' as const, requestId: call.requestId, ok: true as const, value: true };
+    }) });
+    expect(result).toEqual({ ok: true, value: { before: true, after: true, isolated: true, full: true } });
+    expect(containers()).toBe(baseline);
+    expect(await execute(`async function main(){return !process.getBuiltinModule('fs').existsSync(${JSON.stringify(path)});}`))
+      .toEqual({ ok: true, value: true });
+  }, 45_000);
 
   it('rejects a second call even when the script catches errors', async () => {
     const onConnectorCall = jest.fn(async (call) => ({ type: 'connector.reply' as const, requestId: call.requestId, ok: true as const, value: [] }));

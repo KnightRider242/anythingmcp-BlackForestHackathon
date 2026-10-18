@@ -64,6 +64,7 @@ function oauthClientId(user: {
   return typeof value === 'string' && value ? value : undefined;
 }
 import { DynamicMcpTools } from './dynamic-mcp-tools';
+import { AuditService } from '../audit/audit.service';
 import { RolesService } from '../roles/roles.service';
 import { registerDemoTools } from './mcp-demo.tools';
 import { KgService } from '../knowledge-graph/kg.service';
@@ -237,6 +238,7 @@ export class McpEndpointController {
     private readonly kgSkills: KgSkillService,
     @Optional() private readonly sharedSetup?: SharedSetupRegistry,
     @Optional() private readonly moduleRef?: ModuleRef,
+    @Optional() private readonly auditService?: AuditService,
   ) {}
 
   private codeboundTools(): CodeboundMcpToolsService | undefined {
@@ -969,10 +971,6 @@ export class McpEndpointController {
     // user must not reach it either.
     if (this.refuseOtherServer(serverId, req, res)) return;
 
-    // Stateful reuse: a POST carrying a known, owned session id is routed
-    // straight to that session's live transport (skips rebuilding the server).
-    if (await this.routeToSession(serverId, req, res, body)) return;
-
     // 1. Resolve the MCP server
     const mcpServerConfig = await this.mcpServersService.findById(serverId);
     if (!mcpServerConfig) {
@@ -1077,6 +1075,13 @@ export class McpEndpointController {
     const allTools = this.toolRegistry.getAllTools();
     const serverTools = allTools.filter((t) => connectorIds.includes(t.connectorId));
 
+    // A role-hidden tool has no SDK callback, so the ordinary executor cannot
+    // audit its rejection. Check live policy before either transport, including
+    // session reuse. Only resolve tools in this server's own workspace.
+    if (await this.refuseRoleRestrictedCall(body, res, serverTools, allowedToolIds,
+      user, mcpServerConfig.organizationId, serverId)) return;
+    if (await this.routeToSession(serverId, req, res, body)) return;
+
     // 4. The connectors this caller can use: the owners of the tools that
     // survive both filters. Instructions and resources are scoped to exactly
     // this set, so neither can describe a connector the tool list hides.
@@ -1176,6 +1181,33 @@ export class McpEndpointController {
     // The server was already built above with this caller's tool surface, so
     // the factory hands back that instance rather than constructing another.
     await this.serveStateless(req, res, body, () => mcpServer, `server ${serverId}`);
+  }
+
+  private async refuseRoleRestrictedCall(
+    body: unknown, res: Response, tools: RegisteredTool[], allowed: string[] | null,
+    user: any, organizationId: string, serverId: string,
+  ): Promise<boolean> {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || allowed === null) return false;
+    const call = body as { method?: unknown; params?: { name?: unknown }; id?: unknown };
+    if (call.method !== 'tools/call' || typeof call.params?.name !== 'string') return false;
+    const tool = tools.find(item => item.name === call.params!.name && item.organizationId === organizationId);
+    if (!tool || allowed.includes(tool.id)) return false;
+    // One bounded record per authenticated, rate-limited request. Never retain
+    // arguments, request IDs, tool definitions, headers, email or key names.
+    try {
+      if (!this.auditService) throw new Error('Audit unavailable');
+      await this.auditService.logInvocation({
+        toolId: tool.id, userId: user?.sub, organizationId, mcpServerId: serverId,
+        input: {}, status: 'ERROR', error: 'FORBIDDEN: Tool access denied',
+        clientInfo: 'mcp/authorization', durationMs: 0, deduplicate: false,
+      });
+    } catch {
+      // An audit outage never permits execution or logs caller-controlled data.
+      this.logger.error('MCP denial audit unavailable');
+    }
+    res.status(200).json({ jsonrpc: '2.0', id: call.id ?? null,
+      error: { code: -32600, message: 'Tool is not available to you.' } });
+    return true;
   }
 
   /**
