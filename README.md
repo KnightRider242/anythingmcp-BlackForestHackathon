@@ -12,6 +12,20 @@
 | **Security** | No direct sandbox network or host mounts; bounded CPU/memory/calls; workspace and role checks; audited denials |
 | **Official acceptance** | **6/6 mandatory functional checks**, **3/3 secret scans**, **A1–A11 live attack checks passed** |
 
+**Install on a new machine or upgrade an existing local AnythingMCP installation:**
+
+```bash
+bash setup.sh                   # choose Local development + CODEBOUND
+npm run codebound:dev          # frontend + backend share the root .env
+# Existing local .env/database: bash setup.sh --add-codebound
+```
+
+The installer builds the isolated sandbox, starts loopback-only PostgreSQL,
+deploys CODEBOUND migrations and preserves existing credentials/data. It does
+**not** install the official hackathon test kit. The stock Docker-only deployment
+still lacks a trusted supervisor, so its CODEBOUND script execution is unavailable.
+Read [portable setup and security limitations](docs/codebound/PORTABLE_SETUP.md).
+
 **Build from a clean Linux checkout (no application secrets needed):**
 
 ```bash
