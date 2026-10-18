@@ -1,3 +1,36 @@
+# CODEBOUND — Secure script workflows for AnythingMCP
+
+> **Black Forest Hackathon 2026** · Built on [AnythingMCP](https://github.com/HelpCode-ai/anythingmcp) · **[Build / setup / demo guide](docs/codebound/QUICKSTART.md)**
+
+**Challenge:** MCP exposes individual connector tools, but business questions often require pagination, cross-system joins and large intermediate datasets. **CODEBOUND** adds **versioned, typed JavaScript scripts that become MCP tools**. They run in disposable Docker sandboxes; all approved connector calls go through a live-authorizing gateway, and the model receives only the compact result.
+
+| Capability | Demonstrated |
+| --- | --- |
+| **Price drift (F2)** | ERP + Supplier API; 4 matches at 5% threshold, 2 at 10% |
+| **Catalogue count (F3)** | Full pagination, 800 fasteners; explicit incomplete result on a failing source |
+| **Stuck orders (F4)** | ERP + Carrier tracking join; flags shipments with stale scans |
+| **Security** | No direct sandbox network or host mounts; bounded CPU/memory/calls; workspace and role checks; audited denials |
+| **Official acceptance** | **6/6 mandatory functional checks**, **3/3 secret scans**, **A1–A11 live attack checks passed** |
+
+**Build from a clean Linux checkout (no application secrets needed):**
+
+```bash
+docker compose -f docker-compose.yml build app
+docker build -f deploy/codebound/Dockerfile -t codebound-sandbox:mvp .
+```
+
+The first command compiles the existing combined AnythingMCP app image; the second builds CODEBOUND's separate sandbox image. **A successful app build alone is not a deployed CODEBOUND runtime.** Our verified end-to-end setup uses a host-running backend (port 4001), isolated PostgreSQL (5434), the [official CODEBOUND kit](https://github.com/HelpCode-ai/codebound-kit) mocks and Docker sandbox supervisor.
+
+**Start here:** [CODEBOUND quickstart, exact build/start commands and live demo](docs/codebound/QUICKSTART.md) · [Architecture](docs/codebound/README.md) · [F2–F4 report](docs/codebound/F234_IMPLEMENTATION_REPORT.md) · [Security attack report](docs/codebound/ATTACK_CARD_VERIFICATION_REPORT.md).
+
+**Scope:** Optional F5 / injected secrets is not implemented, so the full official checker may exit 1 even though every mandatory check and secret scan passes. A12 is not applicable to the tested setup and A13 requires optional F5. We do not claim the standard root Docker Compose deployment provides the sandbox supervisor out of the box.
+
+---
+
+## Upstream project: AnythingMCP
+
+The remainder of this README retains the original AnythingMCP introduction, setup guidance, features and attribution. The hackathon-specific CODEBOUND implementation and verification are documented above.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/HelpCode-ai/anythingmcp/badges/banner.png" alt="AnythingMCP turns ERP, e-commerce, REST, SOAP and SQL systems into MCP tools for Claude and ChatGPT: 474 connectors, 20 of them with no API key." width="100%" />
 </p>
