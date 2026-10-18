@@ -225,10 +225,19 @@ main() {
   local CADDY_ENABLED="false" ACME_EMAIL="" DOMAIN="" APP_BIND_IP="0.0.0.0"
 
   HOSTNAME=$(ask "Hostname or domain" "localhost")
+  if [ "$MODE" = "local" ] && [ "$HOSTNAME" != "localhost" ] && [ "$HOSTNAME" != "127.0.0.1" ]; then
+    error "Integrated local development supports localhost only. Use a secure reverse proxy and a separate hardened supervisor for production."
+    exit 1
+  fi
 
   if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ]; then
     PROTOCOL="http"
-    FRONTEND_PORT=$(ask "Frontend port" "3000")
+    if [ "$MODE" = "local" ]; then
+      FRONTEND_PORT="3000"
+      info "  Next.js development UI runs on port 3000."
+    else
+      FRONTEND_PORT=$(ask "Frontend port" "3000")
+    fi
     BACKEND_PORT=$(ask "Backend port" "4000")
   else
     if ask_yn "Enable HTTPS with automatic SSL certificate? (recommended)" "y"; then
