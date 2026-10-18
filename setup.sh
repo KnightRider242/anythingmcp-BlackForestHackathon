@@ -1,12 +1,36 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AnythingMCP — Interactive Setup Script
+# AnythingMCP + CODEBOUND — Interactive Setup Script
 # =============================================================================
-# Generates .env, configures services, and starts the application.
-# Works on macOS and Linux. Requires: bash, openssl, docker (for Docker mode).
+# Generates .env, configures services, and sets up the integrated application.
+# On local mode, CODEBOUND scripts execute in isolated Docker Linux containers.
+# Works on macOS and Linux. Requires bash, Docker Linux containers, Node 22.12+, npm.
 # =============================================================================
 
 set -euo pipefail
+
+# Run from the repository regardless of the caller's current directory.
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+case "${1:-}" in
+  --help|-h)
+    cat <<'USAGE'
+Usage:
+  bash setup.sh                 Interactive first-time installation
+  bash setup.sh --add-codebound  Preserve the existing .env/database and add
+                                 the CODEBOUND sandbox to a local development setup
+
+Choose "Local development + CODEBOUND" for executable workflows. The existing
+single-container Docker Compose deployment does not provide a trusted Docker
+supervisor; its CODEBOUND script execution is unavailable.
+USAGE
+    exit 0 ;;
+  --add-codebound)
+    bash scripts/setup-codebound.sh --existing
+    exit $? ;;
+  "") ;;
+  *) printf 'Unknown option: %s (run bash setup.sh --help)\n' "$1" >&2; exit 2 ;;
+esac
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -117,16 +141,16 @@ wait_for_postgres() {
 main() {
   echo ""
   echo -e "${BOLD}==================================${NC}"
-  echo -e "${BOLD}  AnythingMCP Setup${NC}"
+  echo -e "${BOLD}  AnythingMCP + CODEBOUND Setup${NC}"
   echo -e "${BOLD}==================================${NC}"
-  echo -e "${DIM}  This script will configure and start AnythingMCP.${NC}"
+  echo -e "${DIM}  This script will configure AnythingMCP and its CODEBOUND features.${NC}"
   echo ""
 
   # Check for existing .env
   if [ -f .env ]; then
     warn "An existing .env file was found."
     if ! ask_yn "Overwrite it?" "n"; then
-      info "Setup cancelled. Your existing .env was not modified."
+      info "Setup cancelled. For a safe CODEBOUND upgrade, use: bash setup.sh --add-codebound"
       exit 0
     fi
     echo ""
@@ -136,8 +160,8 @@ main() {
   info "Step 1: Deployment Mode"
   local mode_choice
   mode_choice=$(ask_choice "Choose mode" \
-    "Docker (recommended for production)" \
-    "Local development (requires Node.js 22+)")
+    "Docker (AnythingMCP; CODEBOUND execution requires a separate supervisor)" \
+    "Local development + CODEBOUND (recommended; requires Node.js 22.12+)")
 
   local MODE
   case "$mode_choice" in
@@ -145,6 +169,16 @@ main() {
     2) MODE="local" ;;
     *) MODE="docker" ;;
   esac
+
+  # Docker-only app bundles the CODEBOUND UI/routes but cannot reach a trusted
+  # host Docker supervisor. Never mount /var/run/docker.sock into the web app.
+  if [ "$MODE" = "docker" ]; then
+    warn "Docker-only mode does NOT execute CODEBOUND scripts: no trusted sandbox supervisor is configured."
+    if ! ask_yn "Continue with the standard AnythingMCP Docker deployment anyway?" "n"; then
+      info "Choose local development mode for working CODEBOUND execution."
+      exit 0
+    fi
+  fi
 
   # Check prerequisites
   if [ "$MODE" = "docker" ]; then
@@ -157,15 +191,31 @@ main() {
       exit 1
     fi
   else
-    if ! command -v node &> /dev/null; then
-      error "Node.js is not installed. Please install Node.js 22+: https://nodejs.org"
+    for executable in docker node npm; do
+      if ! command -v "$executable" &>/dev/null; then
+        error "$executable is required for the integrated local CODEBOUND setup."
+        exit 1
+      fi
+    done
+    if ! docker compose version &>/dev/null || ! docker info &>/dev/null; then
+      error "Docker with Compose v2 must be running (Linux containers)."
       exit 1
     fi
-    if ! command -v npm &> /dev/null; then
-      error "npm is not found. Please install Node.js 22+ with npm."
+    if [ "$(docker info --format '{{.OSType}}')" != linux ]; then
+      error "CODEBOUND requires Docker Linux containers."
+      exit 1
+    fi
+    if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=12)?0:1)'; then
+      error "Node.js 22.12+ is required for integrated CODEBOUND setup."
       exit 1
     fi
   fi
+  for executable in openssl curl; do
+    if ! command -v "$executable" &>/dev/null; then
+      error "$executable is required for initial setup."
+      exit 1
+    fi
+  done
 
   # ── Step 2: Domain & Ports ───────────────────────────────────────────────
   echo ""
@@ -384,6 +434,8 @@ FRONTEND_URL=$FRONTEND_URL
 NEXT_PUBLIC_API_URL=$BACKEND_URL
 NEXTAUTH_URL=$FRONTEND_URL
 NEXTAUTH_SECRET=$NEXTAUTH_SECRET
+# Host-run frontend proxy uses the same integrated NestJS backend.
+BACKEND_INTERNAL_URL=http://127.0.0.1:$BACKEND_PORT
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 CORS_ORIGIN=$FRONTEND_URL
@@ -419,6 +471,8 @@ fi)
 # ── Ports (Docker) ───────────────────────────────────────────────────────────
 FRONTEND_PORT=$FRONTEND_PORT
 BACKEND_PORT=$BACKEND_PORT
+# Docker installations build this fork; do not replace upstream's latest tag.
+ANYTHINGMCP_IMAGE=codebound-anythingmcp:local
 $([ "$MODE" = "local" ] && echo "POSTGRES_PORT=$POSTGRES_PORT" || echo "# POSTGRES_PORT=5433")
 
 # ── Reverse Proxy (Caddy) ───────────────────────────────────────────────────
@@ -437,7 +491,8 @@ echo "# APP_BIND_IP=0.0.0.0"
 fi)
 ENVEOF
 
-  success "  .env file created."
+  chmod 600 .env
+  success "  .env file created with owner-only permissions."
 
   # ── Execute Setup ────────────────────────────────────────────────────────
   if [ "$MODE" = "docker" ]; then
@@ -503,15 +558,9 @@ REDISEOF
       rm -f docker-compose.override.yml
     fi
 
-    # Clean up any existing containers/volumes with mismatched credentials
-    if docker volume inspect amcp_postgres_data > /dev/null 2>&1; then
-      echo ""
-      warn "Existing PostgreSQL data volume found."
-      if ask_yn "Reset database? (Required if password changed)" "y"; then
-        docker compose down -v 2>/dev/null || true
-        success "  Old database volume removed."
-      fi
-    fi
+    # Preserve existing database volumes and credentials. An existing Docker
+    # installation should reuse its original .env rather than regenerate it.
+    # This installer intentionally never runs 'docker compose down -v'.
 
     echo ""
     info "Building and starting containers (this may take a few minutes on first run)..."
@@ -531,6 +580,7 @@ REDISEOF
       echo -e "  MCP Endpoint:  ${BOLD}$BACKEND_URL/mcp${NC}"
       echo -e "  Swagger Docs:  ${BOLD}$BACKEND_URL/api/docs${NC}"
       echo ""
+      warn "CODEBOUND script execution is unavailable in Docker-only mode without a separate trusted supervisor."
       echo -e "  ${DIM}Next step: Open ${FRONTEND_URL} and register your admin account.${NC}"
       echo -e "  ${DIM}The first user to register will become the administrator.${NC}"
       echo ""
@@ -544,23 +594,16 @@ REDISEOF
     echo ""
     info "Setting up local development environment..."
 
-    # Symlink .env
-    ln -sf ../../.env packages/backend/.env 2>/dev/null || true
-    ln -sf ../../.env packages/frontend/.env 2>/dev/null || true
-    success "  .env symlinked into packages."
+    # The CODEBOUND dev launcher propagates the root .env to both workspaces.
+    # Do not overwrite preexisting package-specific .env files or symlinks.
+    info "  Using root .env through npm run codebound:dev (no package files overwritten)."
 
     # Start PostgreSQL via Docker
     echo ""
     info "Starting PostgreSQL via Docker..."
 
-    # Clean up any existing containers/volumes with mismatched credentials
-    if docker volume inspect amcp_postgres_data > /dev/null 2>&1; then
-      warn "  Existing PostgreSQL data volume found."
-      if ask_yn "  Reset database? (Required if password changed)" "y"; then
-        docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v 2>/dev/null || true
-        success "  Old database volume removed."
-      fi
-    fi
+    # Never reset a database volume during installation. Safe incremental
+    # CODEBOUND migrations run against the existing configured database.
 
     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres
 
@@ -574,22 +617,14 @@ REDISEOF
     # Install dependencies
     echo ""
     info "Installing npm dependencies..."
-    npm install
+    npm ci
 
-    # Run migrations
+    # CODEBOUND is part of the same NestJS/Next.js application. Prepare its
+    # restricted Docker runner and apply all existing additive migrations.
     echo ""
-    info "Running database migrations..."
-    (
-      # Export env vars for Prisma CLI
-      set -a
-      # shellcheck disable=SC1091
-      . .env
-      set +a
-      cd packages/backend
-      npx prisma migrate deploy 2>/dev/null || npx prisma migrate dev --name init
-      npx prisma generate
-    )
-    success "  Database migrations complete."
+    info "Installing CODEBOUND in the existing application..."
+    bash scripts/setup-codebound.sh --existing
+    success "  CODEBOUND sandbox and database migrations prepared."
 
     echo ""
     echo -e "${GREEN}${BOLD}==================================${NC}"
@@ -600,13 +635,15 @@ REDISEOF
     echo ""
     echo -e "  To start the development servers, run:"
     echo ""
-    echo -e "    ${BOLD}npm run dev${NC}"
+    echo -e "    ${BOLD}npm run codebound:dev${NC}"
     echo ""
     echo -e "  Then open:"
     echo -e "    Web UI:        ${BOLD}$FRONTEND_URL${NC}"
     echo -e "    Backend API:   ${BOLD}$BACKEND_URL${NC}"
     echo -e "    MCP Endpoint:  ${BOLD}$BACKEND_URL/mcp${NC}"
     echo -e "    Swagger Docs:  ${BOLD}$BACKEND_URL/api/docs${NC}"
+    echo -e "    CODEBOUND:      ${BOLD}$FRONTEND_URL/scripts${NC}"
+    echo -e "    Run history:    ${BOLD}$FRONTEND_URL/scripts/runs${NC}"
     echo ""
     echo -e "  ${DIM}The first user to register will become the administrator.${NC}"
     echo ""
