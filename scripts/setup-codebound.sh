@@ -68,7 +68,7 @@ if (!/^\d{1,5}$/.test(env.PORT ?? '') || +env.PORT < 1 || +env.PORT > 65535) {
 NODE
 
 say 'Starting the existing PostgreSQL service without resetting its volume...'
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait --wait-timeout 120 postgres
 
 if [[ ! -f node_modules/prisma/build/index.js ]]; then
   say 'Installing locked npm dependencies...'
