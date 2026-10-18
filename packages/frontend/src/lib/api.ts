@@ -9,6 +9,7 @@ export interface ScriptDefinition {
   name: string; description: string; source: string;
   inputSchema: Record<string, unknown>; outputSchema: Record<string, unknown>;
   binding: { connectorId: string; toolId: string; definitionSha256: string };
+  additionalBindings?: { connectorId: string; toolId: string; definitionSha256: string }[];
 }
 export interface SavedScript extends ScriptDefinition {
   id: string; revision: number; sourceSha256: string; organizationId: string; ownerUserId: string;
@@ -18,6 +19,17 @@ type CodeboundOutcome<T> = { ok: true; value: T } | { ok: false; error: { code: 
 export interface ScriptRun {
   executionId: string; status: 'succeeded' | 'failed' | 'cancelled'; output?: unknown;
   error?: { code: string; message: string };
+  metrics?: { wallTimeMs: number; connectorCalls: number; connectorResponseBytes: number; outputBytes: number };
+}
+export interface CodeboundRunReceipt {
+  executionId: string; originalScriptId: string; scriptName: string | null;
+  revision: number; status: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  createdAt: string; startedAt: string; finishedAt: string | null;
+  wallTimeMs: number; connectorCalls: number; connectorResponseBytes: number;
+  outputBytes: number; errorCode: string | null; errorLimit: string | null;
+}
+export interface CodeboundRunPage {
+  items: CodeboundRunReceipt[]; nextCursor: string | null;
 }
 
 async function codeboundRequest<T>(path: string, options: RequestOptions): Promise<T> {
@@ -26,6 +38,7 @@ async function codeboundRequest<T>(path: string, options: RequestOptions): Promi
   return result.value;
 }
 export const codebound = {
+  runs: (token: string, afterId?: string) => codeboundRequest<CodeboundRunPage>(`runs${afterId ? `?afterId=${encodeURIComponent(afterId)}` : ''}`, { token }),
   list: (token: string, afterId?: string) => codeboundRequest<SavedScript[]>(`scripts${afterId ? `?afterId=${encodeURIComponent(afterId)}` : ''}`, { token }),
   get: (token: string, id: string) => codeboundRequest<SavedScript>(`scripts/${encodeURIComponent(id)}`, { token }),
   bindings: (token: string, afterId?: string) => codeboundRequest<{ items: ScriptBinding[]; nextCursor: string | null }>(`bindings${afterId ? `?afterId=${encodeURIComponent(afterId)}` : ''}`, { token }),
