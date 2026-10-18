@@ -163,4 +163,49 @@ describe('CODEBOUND persistence validation (database mocked)', () => {
       error: { code: 'SCRIPT_ERROR', message: '€'.repeat(171) } })).toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
     expect(s.db.codeboundScriptRun.updateMany).not.toHaveBeenCalled();
   });
+  it('lists only caller- and workspace-scoped receipt metadata', async () => {
+    const s = setup();
+    const run = {
+      executionId: 'run-a', originalScriptId: 'script-a', revision: 2,
+      status: 'SUCCEEDED', createdAt: new Date(), startedAt: new Date(), finishedAt: new Date(),
+      wallTimeMs: 100, connectorCalls: 8, connectorResponseBytes: 55196, outputBytes: 316,
+      errorCode: null, errorLimit: null, script: { name: 'Count' },
+    };
+    s.db.codeboundScriptRun.findMany = jest.fn().mockResolvedValue([run]);
+    const result = await s.service.listRunReceipts(principal());
+    expect(result).toMatchObject({ ok: true, value: { items: [{ executionId: 'run-a', scriptName: 'Count' }], nextCursor: null } });
+    expect(s.db.codeboundScriptRun.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { organizationId: 'org-a', ownerUserId: 'owner', callerUserId: 'owner' },
+      select: expect.not.objectContaining({ source: true, input: true, output: true, errorMessage: true }),
+    }));
+    expect(JSON.stringify(result)).not.toContain('credential-canary');
+  });
+
+  it('rejects a history cursor that does not belong to the current owner', async () => {
+    const s = setup();
+    s.db.codeboundScriptRun.findFirst.mockResolvedValueOnce(null);
+    s.db.codeboundScriptRun.findMany = jest.fn();
+    expect(await s.service.listRunReceipts(principal(), 'foreign-run')).toMatchObject({
+      ok: false, error: { code: 'NOT_FOUND' },
+    });
+    expect(s.db.codeboundScriptRun.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { organizationId: 'org-a', ownerUserId: 'owner', callerUserId: 'owner', executionId: 'foreign-run' },
+    }));
+    expect(s.db.codeboundScriptRun.findMany).not.toHaveBeenCalled();
+  });
+
+  it('paginates receipt history without leaking the extra row', async () => {
+    const s = setup();
+    s.db.codeboundScriptRun.findMany = jest.fn().mockResolvedValue(Array.from({ length: 26 }, (_, n) => ({
+      executionId: `run-${n}`, originalScriptId: 'script-a', revision: 1,
+      status: 'SUCCEEDED', createdAt: new Date(), startedAt: new Date(), finishedAt: new Date(),
+      wallTimeMs: 1, connectorCalls: 1, connectorResponseBytes: 100, outputBytes: 10,
+      errorCode: null, errorLimit: null, script: { name: 'Count' },
+    })));
+    const result = await s.service.listRunReceipts(principal());
+    expect(result).toMatchObject({ ok: true, value: { nextCursor: 'run-24' } });
+    if (!result.ok) throw new Error('Expected success');
+    expect(result.value.items).toHaveLength(25);
+  });
+
 });
