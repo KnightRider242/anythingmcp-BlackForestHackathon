@@ -48,8 +48,13 @@ if (!['postgresql:', 'postgres:'].includes(url.protocol) || !['localhost', '127.
   console.error('[CODEBOUND] Existing .env uses a non-local database URL. Docker-only AnythingMCP is not a supported CODEBOUND execution target; choose the integrated local source mode instead.');
   process.exit(1);
 }
-if (env.POSTGRES_PORT && Number(env.POSTGRES_PORT) !== Number(url.port || '5432')) {
-  console.error('[CODEBOUND] POSTGRES_PORT differs from DATABASE_URL port; refusing to touch an unexpected database.');
+if (url.pathname !== '/anythingmcp' || url.username !== 'amcp' || !env.POSTGRES_PORT ||
+    Number(env.POSTGRES_PORT) !== Number(url.port || '5432')) {
+  console.error('[CODEBOUND] Expected the existing local AnythingMCP PostgreSQL database and matching POSTGRES_PORT. Refusing to migrate the isolated kit or an unrelated database.');
+  process.exit(1);
+}
+if (decodeURIComponent(url.password) !== env.POSTGRES_PASSWORD) {
+  console.error('[CODEBOUND] DATABASE_URL password differs from POSTGRES_PASSWORD in .env. Preserve existing secrets and correct the configuration.');
   process.exit(1);
 }
 if (env.NODE_ENV !== 'development') {
