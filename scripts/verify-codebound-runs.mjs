@@ -18,7 +18,7 @@ async function login(user) {
     body: JSON.stringify({ email: user.email, password: user.password }),
     signal: AbortSignal.timeout(10_000),
   });
-  assert.equal(response.status, 201 === response.status ? 201 : 200, 'Kit login must succeed');
+  assert.ok(response.ok, 'Kit login must succeed');
   const body = await response.json();
   assert.equal(typeof body.accessToken, 'string');
   return body.accessToken;
