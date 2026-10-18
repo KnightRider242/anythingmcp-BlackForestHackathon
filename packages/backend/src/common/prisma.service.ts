@@ -75,8 +75,9 @@ export class PrismaService
           `${toPlain ? 'Decrypted' : 'Encrypted'} the variables of ${changed} connector${changed === 1 ? '' : 's'}`,
         );
       }
-    } catch (err: any) {
-      this.logger.error(`connector variables not reconciled: ${err?.message ?? err}`);
+    } catch {
+      // Prisma diagnostics can include the bound connector variables.
+      this.logger.error('Connector variables could not be reconciled');
     }
     return { changed };
   }

@@ -18,15 +18,15 @@ const principalSchema = z.strictObject({
   userId: id, organizationId: id, tokenIssuedAtMs: z.number().int().positive().safe(),
   tokenExpiresAtMs: z.number().int().positive().safe(),
   origin: z.discriminatedUnion('kind', [z.strictObject({ kind: z.literal('dashboard') }),
-    z.strictObject({ kind: z.literal('mcp'), serverId: id, oauthClientId: id.nullable() })]),
+    z.strictObject({ kind: z.literal('mcp'), serverId: id, oauthClientId: id.nullable(), apiKeyId: id.optional() })]),
 });
 const completionSchema = z.strictObject({
   status: z.enum(['succeeded', 'failed', 'cancelled']),
   metrics: z.strictObject({
     // Telemetry ceiling, not permission to run longer than the execution limit.
     wallTimeMs: z.number().finite().min(0).max(86_400_000),
-    connectorCalls: z.number().int().min(0).max(1),
-    connectorResponseBytes: z.number().int().min(0).max(MVP_LIMITS.maxConnectorResponseBytes),
+    connectorCalls: z.number().int().min(0).max(MVP_LIMITS.maxConnectorCalls),
+    connectorResponseBytes: z.number().int().min(0).max(MVP_LIMITS.maxTotalConnectorResponseBytes),
     outputBytes: z.number().int().min(0).max(MVP_LIMITS.maxOutputBytes),
   }),
   error: codeboundErrorSchema.optional(),
@@ -91,6 +91,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
     return parseScriptSnapshot({ id: row.id, organizationId: row.organizationId, ownerUserId: row.ownerUserId,
       name: row.name, description: row.description, source: row.source, sourceSha256: row.sourceSha256,
       inputSchema: row.inputSchema, outputSchema: row.outputSchema, revision: row.revision,
+      additionalBindings: row.additionalBindings ?? [],
       binding: { connectorId: row.connectorId, toolId: row.toolId, definitionSha256: row.definitionSha256 } });
   }
 
@@ -106,10 +107,17 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
 
   private async approve(p: ExecutionPrincipal, snapshot: ScriptSnapshot, store?: Store) {
     try {
-      const tool = await this.authorization.authorize(p, snapshot, store);
+      const tools = [];
+      for (const binding of [snapshot.binding, ...(snapshot.additionalBindings ?? [])]) {
+        tools.push(await this.authorization.authorize(p, snapshot, store, binding));
+      }
+      if (new Set(tools.map(tool => tool.name)).size !== tools.length ||
+          new Set([snapshot.binding, ...(snapshot.additionalBindings ?? [])].map(binding => binding.toolId)).size !== tools.length) {
+        throw new PersistenceFailure('INVALID_INPUT');
+      }
       // Avoid accidentally saving decrypted connector variables pasted into source/schema.
       const text = JSON.stringify(snapshot);
-      const secrets = Object.values(tool.connector.envVars ?? {}).filter((v): v is string => typeof v === 'string' && !!v);
+      const secrets = tools.flatMap(tool => Object.values(tool.connector.envVars ?? {})).filter((v): v is string => typeof v === 'string' && !!v);
       if (secrets.some(secret => text.includes(JSON.stringify(secret).slice(1, -1)))) throw new PersistenceFailure('INVALID_INPUT');
     } catch (error) {
       if (error instanceof PersistenceFailure) throw error;
@@ -120,6 +128,7 @@ export class ScriptPersistenceService implements Pick<ScriptLifecycle, 'create' 
   private data(snapshot: ScriptSnapshot) {
     return { name: snapshot.name, description: snapshot.description, source: snapshot.source, sourceSha256: snapshot.sourceSha256,
       inputSchema: snapshot.inputSchema as Prisma.InputJsonObject, outputSchema: snapshot.outputSchema as Prisma.InputJsonObject,
+      additionalBindings: (snapshot.additionalBindings ?? []) as unknown as Prisma.InputJsonArray,
       connectorId: snapshot.binding.connectorId, toolId: snapshot.binding.toolId, definitionSha256: snapshot.binding.definitionSha256 };
   }
 

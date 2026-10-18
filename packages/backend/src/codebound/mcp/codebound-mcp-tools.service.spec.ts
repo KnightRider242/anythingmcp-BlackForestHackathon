@@ -2,6 +2,7 @@
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
+import { z } from 'zod';
 import { AuthService } from '../../auth/auth.service';
 import { parseScriptSnapshot } from '../contracts.validation';
 import { CodeboundMcpToolsService, MCP_DISCOVERY_LIMITS, scriptToolName } from './codebound-mcp-tools.service';
@@ -74,7 +75,7 @@ describe('CODEBOUND MCP bridge (database and execution mocked)', () => {
     }, keyRequest());
     expect(keys.findFirst).toHaveBeenCalledWith({
       where: { key: 'mcp_codebound-test-key', isActive: true, mcpServerId: 'server-a' },
-      select: { userId: true, organizationId: true, createdAt: true },
+      select: { id: true, userId: true, organizationId: true, createdAt: true },
     });
   });
   it('denies revoked, missing and unscoped API keys even when req.user claims authority', async () => {
@@ -86,6 +87,34 @@ describe('CODEBOUND MCP bridge (database and execution mocked)', () => {
       }, keyRequest(token));
     }
     expect(persistence.list).not.toHaveBeenCalled();
+  });
+  it('publishes all F1 suffixes and typed schemas for a verified server-scoped API key', async () => {
+    const fixtures = [
+      { name: 'price_drift_check', properties: { threshold: { type: 'number' } } },
+      { name: 'catalogue_total', properties: { category: { type: 'string' } } },
+      { name: 'stuck_orders', properties: { days: { type: 'number' }, as_of: { type: 'string' } } },
+    ];
+    persistence.list.mockResolvedValue({ ok: true, value: fixtures.map(fixture => ({
+      ...snapshot, id: fixture.name, name: fixture.name,
+      inputSchema: { type: 'object', properties: fixture.properties,
+        required: Object.keys(fixture.properties), additionalProperties: false },
+    })) });
+    await within(async () => {
+      const entries = await service.entries(service.currentPrincipal());
+      expect(entries).toHaveLength(3);
+      entries.forEach((entry, index) => {
+        const fixture = fixtures[index];
+        expect(entry.name.endsWith('_' + fixture.name)).toBe(true);
+        const registerTool = jest.fn(() => ({ remove() {} }));
+        entry.register({ registerTool } as any);
+        const [, config] = registerTool.mock.calls[0] as unknown as [string, { inputSchema: z.ZodObject }];
+        expect(z.toJSONSchema(config.inputSchema)).toMatchObject({
+          type: 'object', properties: fixture.properties,
+          required: Object.keys(fixture.properties), additionalProperties: false,
+        });
+      });
+    }, keyRequest());
+    expect(authorization.authorize).toHaveBeenCalledTimes(3);
   });
   it('denies keys from a server without live membership', async () => {
     (service as any).prisma.mcpServerConfig.findFirst = jest.fn().mockResolvedValue(null);

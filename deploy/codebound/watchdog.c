@@ -21,7 +21,7 @@ int main(void) {
   action.sa_handler = expire;
   sigemptyset(&action.sa_mask);
   if (sigaction(SIGALRM, &action, NULL) != 0) return 125;
-  alarm(15);
+  alarm(35);
   pid_t script = fork();
   if (script < 0) return 125;
   if (script == 0) {

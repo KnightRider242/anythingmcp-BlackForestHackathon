@@ -475,9 +475,9 @@ export class RestEngine {
       axiosConfig.httpsAgent = agent;
       axiosConfig.httpAgent = agent;
       axiosConfig.proxy = false;
-      this.logger.debug(`REST call via proxy: ${axiosConfig.method} ${url}`);
+      this.logger.debug('REST call via proxy');
     } else {
-      this.logger.debug(`REST call: ${axiosConfig.method} ${url}`);
+      this.logger.debug('REST call');
     }
 
     const sentAt = Date.now();
@@ -661,10 +661,8 @@ export class RestEngine {
           // there was no way to tell a flaky upstream from a broken connector.
           if (transient) {
             this.logger.warn(
-              `Gave up after ${attempt + 1} attempts on a transient upstream failure: ${
-                (error as AxiosError).code ??
-                (error as AxiosError).response?.status
-              } ${axiosConfig.method?.toUpperCase()} ${axiosConfig.url}`,
+              // Resolved URLs can contain credentials in paths as well as queries.
+              `Gave up after ${attempt + 1} attempts on a transient upstream failure`,
             );
           }
           throw this.describeConnectionError(error, attempt + 1);

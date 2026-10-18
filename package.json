@@ -18,6 +18,8 @@
     "dev:frontend": "npm run dev --workspace=packages/frontend",
     "build": "npm run build --workspace=packages/backend && npm run build --workspace=packages/frontend",
     "build:backend": "npm run build --workspace=packages/backend",
+    "codebound:build": "node scripts/codebound-local.mjs build",
+    "codebound:start": "node scripts/codebound-local.mjs start",
     "build:frontend": "npm run build --workspace=packages/frontend",
     "lint": "npm run lint --workspaces",
     "test": "npm run test --workspaces",

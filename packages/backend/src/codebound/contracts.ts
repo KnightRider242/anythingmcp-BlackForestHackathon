@@ -37,13 +37,14 @@ export interface ExecutionLimits {
   maxInputBytes: number;
   maxOutputBytes: number;
   maxIpcFrameBytes: number;
-  maxConnectorCalls: 1;
+  maxConnectorCalls: number;
   maxConnectorResponseBytes: number;
+  maxTotalConnectorResponseBytes: number;
   maxLogBytes: number;
 }
 
 export const MVP_LIMITS: Readonly<ExecutionLimits> = Object.freeze({
-  wallTimeMs: 10_000,
+  wallTimeMs: 30_000,
   memoryBytes: 128 * 1024 * 1024,
   cpuCores: 0.5,
   maxProcesses: 16,
@@ -51,8 +52,9 @@ export const MVP_LIMITS: Readonly<ExecutionLimits> = Object.freeze({
   maxInputBytes: 16 * 1024,
   maxOutputBytes: 16 * 1024,
   maxIpcFrameBytes: 600 * 1024,
-  maxConnectorCalls: 1,
+  maxConnectorCalls: 128,
   maxConnectorResponseBytes: 512 * 1024,
+  maxTotalConnectorResponseBytes: 8 * 1024 * 1024,
   maxLogBytes: 4 * 1024,
 });
 
@@ -95,17 +97,20 @@ export interface SandboxExecutionRequest {
 export interface SandboxConnectorCall {
   type: 'connector.call';
   requestId: string;
-  binding: 'connector.read';
+  binding: 'connector.read' | 'connector.tool';
+  toolName?: string;
   arguments: JsonObject;
 }
 
 export type SupervisorConnectorReply = {
   type: 'connector.reply';
   requestId: string;
+  recoverable?: true;
 } & Outcome<JsonValue>;
 
 export interface ScriptApi {
   read(arguments_: JsonObject): Promise<JsonValue>;
+  call(toolName: string, arguments_: JsonObject): Promise<JsonValue>;
 }
 
 /** Source defines async function main(input, api). No streaming contract. */
@@ -132,10 +137,10 @@ export interface ExecutionPrincipal {
   tokenExpiresAtMs: number;
   origin:
     | { kind: 'dashboard' }
-    | { kind: 'mcp'; serverId: string; oauthClientId: string | null };
+    | { kind: 'mcp'; serverId: string; oauthClientId: string | null; apiKeyId?: string };
 }
 
-/** One backend-approved REST GET tool, not an advisory MCP annotation. */
+/** One backend-approved REST GET/POST capability, not an MCP annotation. */
 export interface ReadToolBinding {
   connectorId: string;
   toolId: string;
@@ -150,6 +155,7 @@ export interface ConnectorCallControls {
   deadlineEpochMs: number;
   maxResponseBytes: number;
   cache: 'bypass';
+  recordResponseBytes?: (bytes: number) => void;
 }
 
 /**
@@ -175,6 +181,7 @@ export interface ScriptDefinition {
   inputSchema: JsonObject;
   outputSchema: JsonObject;
   binding: ReadToolBinding;
+  additionalBindings?: ReadToolBinding[];
 }
 
 export type ScriptSnapshot = Readonly<Omit<ScriptDefinition, 'inputSchema' | 'outputSchema' | 'binding'> & {

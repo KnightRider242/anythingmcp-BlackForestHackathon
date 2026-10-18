@@ -72,7 +72,7 @@ export class CodeboundMcpToolsService {
       if (!key) return;
       const credential = await this.prisma.mcpApiKey.findFirst({
         where: { key, isActive: true, mcpServerId: serverId },
-        select: { userId: true, organizationId: true, createdAt: true },
+        select: { id: true, userId: true, organizationId: true, createdAt: true },
       });
       if (!credential) return;
       const server = await this.prisma.mcpServerConfig.findFirst({
@@ -91,7 +91,7 @@ export class CodeboundMcpToolsService {
       return {
         userId: credential.userId, organizationId: server.organizationId,
         tokenIssuedAtMs: issuedAt, tokenExpiresAtMs: now + 60_000,
-        origin: { kind: 'mcp', serverId, oauthClientId: null },
+        origin: { kind: 'mcp', serverId, oauthClientId: null, apiKeyId: credential.id },
       };
     }
     // Anonymous/static credentials remain ineligible for script execution.
@@ -160,14 +160,16 @@ export class CodeboundMcpToolsService {
     for (const script of result.value.slice(0, MCP_DISCOVERY_LIMITS.scripts)) {
         try {
           if (signal.aborted) return [];
-          await this.authorization.authorize(principal, script);
+          for (const binding of [script.binding, ...(script.additionalBindings ?? [])]) {
+            await this.authorization.authorize(principal, script, undefined, binding);
+          }
           if (signal.aborted) return [];
           const shape = jsonSchemaToZodShape(script.inputSchema as Record<string, unknown>);
           const schema = script.inputSchema.additionalProperties === false ? z.strictObject(shape) : z.looseObject(shape);
           // Conversion errors never break the caller's other MCP tools.
           metadataBytes += Buffer.byteLength(JSON.stringify({ name: scriptToolName(script.id, script.name),
             description: `${script.name}${script.description ? ': ' + script.description : ''}`, title: script.name,
-            inputSchema: z.toJSONSchema(schema), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true } }));
+            inputSchema: z.toJSONSchema(schema), annotations: { openWorldHint: true } }));
           if (metadataBytes > MCP_DISCOVERY_LIMITS.metadataBytes) break;
           entries.push(this.entry(script, schema));
         } catch { /* Not eligible: disclose neither definition nor rejection details. */ }
@@ -182,7 +184,7 @@ export class CodeboundMcpToolsService {
     return { name: toolName, sig: `${toolName}:${revision}`,
       register: server => server.registerTool(toolName, {
         title: name, description: `${name}${description ? ': ' + description : ''}`,
-        inputSchema: schema, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+        inputSchema: schema, annotations: { openWorldHint: true },
       }, async (args, context) => {
         const current = this.requests.getStore();
         if (!current?.principal || current.principal.organizationId !== organizationId || current.principal.userId !== ownerUserId) return denied();
@@ -194,7 +196,9 @@ export class CodeboundMcpToolsService {
           const saved = await this.persistence.get(current.principal, id);
           if (!saved.ok) return denied();
           if (saved.value.revision !== revision) return denied('VERSION_CONFLICT');
-          await this.authorization.authorize(current.principal, saved.value);
+          for (const binding of [saved.value.binding, ...(saved.value.additionalBindings ?? [])]) {
+            await this.authorization.authorize(current.principal, saved.value, undefined, binding);
+          }
           const result = await this.execution.execute(current.principal, input.data, AbortSignal.any([current.signal, context.mcpReq.signal]));
           if (!result.ok) return denied(result.error.code);
           if (result.value.status !== 'succeeded') return denied(result.value.error.code);

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { z } from 'zod';
 import { AxiosError } from 'axios';
 import { outboundRequest } from '../../common/outbound-http';
@@ -11,16 +11,28 @@ import { assertNoUnresolvedPlaceholders } from '../../common/unresolved-placehol
 import { jsonSchemaToZodShape, stripEnvVarParams } from '../../mcp-server/tool-schema.util';
 import { findSecretLiterals, isCredentialHeaderName, isSecretQueryName } from '../../common/secret-literals.util';
 import { supervisorConnectorReplySchema } from '../contracts.validation';
+import { MVP_LIMITS } from '../contracts';
+import { DeploymentService } from '../../common/deployment.service';
 import type { ConnectorCallControls, ExecutionPrincipal, JsonObject, JsonValue } from '../contracts';
 import type { BoundReadTool } from './bound-read-authorization.service';
 
 const mappingSchema = z.strictObject({
-  method: z.literal('GET'), path: z.string().startsWith('/'),
+  method: z.enum(['GET', 'POST']), path: z.string().startsWith('/'),
   queryParams: z.record(z.string(), z.union([z.string(), z.number().finite(), z.boolean(), z.null()])).optional(),
   headers: z.record(z.string(), z.string()).optional(), encodePathParams: z.boolean().optional(),
-});
+  bodyMapping: z.record(z.string(), z.string().regex(/^\$[A-Za-z_][A-Za-z0-9_]*$/)).optional(),
+}).refine(mapping => mapping.method === 'POST' ? !!mapping.bodyMapping : !mapping.bodyMapping);
 
 export class ConnectorResponseLimitError extends Error {}
+/** Only sanitized HTTP service failures are catchable inside scripts. */
+export class ConnectorUpstreamError extends Error {}
+
+export function allowsCodeboundTestHttp(url: URL, env: NodeJS.ProcessEnv = process.env,
+  deployment: Pick<DeploymentService, 'isSelfHosted'> = new DeploymentService()): boolean {
+  return ['development', 'test'].includes(env.NODE_ENV ?? '') && deployment.isSelfHosted() &&
+    url.protocol === 'http:' && url.hostname === 'localhost' && ['4101', '4102', '4103', '4104'].includes(url.port) &&
+    (env.CODEBOUND_TEST_HTTP_ORIGINS ?? '').split(',').map(value => value.trim()).includes(url.origin);
+}
 
 /** Whole headers alone miss tokens returned without their scheme or cookie name. */
 function headerSecrets(name: string, value: string): string[] {
@@ -47,7 +59,8 @@ function headerSecrets(name: string, value: string): string[] {
 
 @Injectable()
 export class BoundRestExecutor {
-  constructor(private readonly connectors: ConnectorsService) {}
+  constructor(private readonly connectors: ConnectorsService,
+    @Optional() private readonly deployment: DeploymentService = new DeploymentService()) {}
 
   async execute(tool: BoundReadTool, input: JsonObject, principal: ExecutionPrincipal, controls: ConnectorCallControls): Promise<JsonValue> {
     controls.signal.throwIfAborted();
@@ -74,7 +87,8 @@ export class BoundRestExecutor {
       return encodeURIComponent(String(value));
     });
     const base = new URL(resolved.config.baseUrl);
-    if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error('HTTPS connector required');
+    const localTest = allowsCodeboundTestHttp(base, process.env, this.deployment);
+    if ((base.protocol !== 'https:' && !localTest) || base.username || base.password || base.search || base.hash) throw new Error('HTTPS connector required');
     const url = new URL(base.href.replace(/\/$/, '') + path);
     if (url.origin !== base.origin) throw new Error('Invalid destination');
     const headers = { ...resolved.config.headers, ...mapping.headers };
@@ -101,7 +115,13 @@ export class BoundRestExecutor {
       params[key] = value;
     }
     if (Object.keys(headers).some(key => ['x-http-method-override', 'x-http-method', 'x-method-override'].includes(key.toLowerCase()))) throw new Error('Method override forbidden');
-    assertNoUnresolvedPlaceholders({ baseUrl: url.href, headers, authConfig: auth, queryParams: params });
+    const body = mapping.method === 'POST' ? Object.fromEntries(Object.entries(mapping.bodyMapping!).map(([key, template]) => {
+      const name = template.slice(1);
+      if (!Object.hasOwn(args, name) || ['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('Invalid body mapping');
+      return [key, args[name]];
+    })) : undefined;
+    if (body && Buffer.byteLength(JSON.stringify(body)) > MVP_LIMITS.maxInputBytes) throw new Error('Request body limit exceeded');
+    assertNoUnresolvedPlaceholders({ baseUrl: url.href, headers, authConfig: auth, queryParams: params, body });
     controls.signal.throwIfAborted();
     const remaining = controls.deadlineEpochMs - Date.now();
     if (remaining <= 0) throw new Error('Deadline expired');
@@ -109,21 +129,33 @@ export class BoundRestExecutor {
     // uses a proxy, so its connect-time guard must not inherit that exemption.
     const directEnv = { ...process.env };
     for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) delete directEnv[key];
-    const agents = createSsrfGuardedAgents(directEnv);
+    directEnv.SSRF_GUARD = 'enabled';
+    directEnv.SSRF_ALLOW_LOCALHOST = localTest ? 'true' : 'false';
+    directEnv.SSRF_ALLOW_PRIVATE = 'false';
+    // HTTPS retains explicit operator host grants. The HTTP exception bypasses
+    // those grants and allows only loopback for the exact development origin.
+    const agents = createSsrfGuardedAgents(directEnv, { skipAllowlists: localTest });
     const response = await outboundRequest({
       ...agents,
-      method: 'GET', url: url.href, params, headers, signal: controls.signal,
+      method: mapping.method, url: url.href, params, headers, data: body, signal: controls.signal,
       timeout: remaining, maxContentLength: controls.maxResponseBytes,
-      maxBodyLength: 0, responseType: 'json', proxy: false,
-      transitional: { silentJSONParsing: false }, validateStatus: status => status >= 200 && status < 300,
+      maxBodyLength: MVP_LIMITS.maxInputBytes, responseType: 'text', transformResponse: [data => data], proxy: false,
+      validateStatus: () => true,
     }, { maxRedirects: 0, credentialHeaders: Object.keys(headers) }).catch((error: unknown) => {
       if (error instanceof AxiosError && error.code === 'ERR_BAD_RESPONSE' && /^maxContentLength size of \d+ exceeded$/.test(error.message)) {
         throw new ConnectorResponseLimitError();
       }
       throw error;
     }).finally(() => { agents.httpAgent.destroy(); agents.httpsAgent.destroy(); });
+    const text = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+    const transferred = Buffer.byteLength(text);
+    if (transferred > controls.maxResponseBytes) throw new ConnectorResponseLimitError();
+    controls.recordResponseBytes?.(transferred);
+    const contentType: unknown = response.headers?.['content-type'];
+    if (contentType && (typeof contentType !== 'string' || !/^application\/(?:[\w.-]+\+)?json(?:;|$)/i.test(contentType))) throw new Error('Invalid content type');
+    const data: unknown = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
     // Validate plain bounded JSON BEFORE walking it for secret exposure.
-    const reply = supervisorConnectorReplySchema.parse({ type: 'connector.reply', requestId: 'validated', ok: true, value: response.data });
+    const reply = supervisorConnectorReplySchema.parse({ type: 'connector.reply', requestId: 'validated', ok: true, value: data });
     if (!reply.ok) throw new Error('Invalid response');
     const serialized = JSON.stringify(reply.value);
     if (Buffer.byteLength(serialized) > controls.maxResponseBytes) throw new ConnectorResponseLimitError();
@@ -135,8 +167,10 @@ export class BoundRestExecutor {
       // would mask nested headers/params rather than inspect their literals.
       ...findSecretLiterals(url.href).map(finding => finding.value)]
       .filter((v): v is string => typeof v === 'string' && v.length > 0)
-      .flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString('base64')]);
+      .flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString('base64'), Buffer.from(value).toString('hex')]);
     if (secrets.some(secret => serialized.includes(secret) || serialized.includes(JSON.stringify(secret).slice(1, -1)))) throw new Error('Credential echo');
+    if (response.status >= 500 && response.status < 600) throw new ConnectorUpstreamError('Connector operation failed');
+    if (response.status && (response.status < 200 || response.status >= 300)) throw new Error('Connector operation failed');
     return reply.value;
   }
 }

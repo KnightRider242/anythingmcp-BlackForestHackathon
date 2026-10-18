@@ -68,12 +68,58 @@ live('DockerSandboxRunner — real disposable container', () => {
   it('rejects a second call even when the script catches errors', async () => {
     const onConnectorCall = jest.fn(async (call) => ({ type: 'connector.reply' as const, requestId: call.requestId, ok: true as const, value: [] }));
     const result = await new DockerSandboxRunner().execute({
-      executionId: 'second-read', input: {}, limits: MVP_LIMITS,
+      executionId: 'second-read', input: {}, limits: { ...MVP_LIMITS, maxConnectorCalls: 1 },
       source: 'async function main(input, api) { await api.read({}); try { await api.read({}); } catch {} return {}; }',
     }, { signal: new AbortController().signal, onConnectorCall });
     expect(result).toMatchObject({ ok: false, error: { code: 'RESOURCE_LIMIT', limit: 'connectorCalls' } });
     expect(onConnectorCall).toHaveBeenCalledTimes(1);
   }, 30_000);
+
+  it('handles sequential named calls and a recoverable service failure in the real worker', async () => {
+    let calls = 0;
+    const onConnectorCall = jest.fn(async call => {
+      calls++;
+      if (calls === 2) return { type: 'connector.reply' as const, requestId: call.requestId, ok: false as const,
+        recoverable: true as const, error: { code: 'CONNECTOR_ERROR' as const, message: 'Connector operation failed' } };
+      return { type: 'connector.reply' as const, requestId: call.requestId, ok: true as const, value: calls };
+    });
+    const result = await new DockerSandboxRunner().execute({ executionId: 'multi-ipc', input: {}, limits: MVP_LIMITS,
+      source: `async function main(input, api) {
+        const first = await api.read({});
+        let recovered = false;
+        try { await api.call('approved_tool', {page:2}); } catch(error) { recovered = error.code === 'CONNECTOR_ERROR'; }
+        return {first, recovered, last:await api.call('approved_tool', {page:3})};
+      }`,
+    }, { signal: new AbortController().signal, onConnectorCall });
+    expect(result).toEqual({ ok: true, value: { first: 1, recovered: true, last: 3 } });
+    expect(onConnectorCall).toHaveBeenNthCalledWith(2, expect.objectContaining({ binding: 'connector.tool', toolName: 'approved_tool', requestId: 'read-2' }));
+  }, 30_000);
+
+  it('cannot catch authorization denial and return success from the real worker', async () => {
+    const onConnectorCall = jest.fn(async call => ({ type: 'connector.reply' as const, requestId: call.requestId,
+      ok: false as const, error: { code: 'FORBIDDEN' as const, message: 'Connector access denied' } }));
+    const result = await new DockerSandboxRunner().execute({ executionId: 'fatal-ipc', input: {}, limits: MVP_LIMITS,
+      source: `async function main(input, api) { try { await api.call('payroll', {}); } catch {} return {bypassed:true}; }`,
+    }, { signal: new AbortController().signal, onConnectorCall });
+    expect(result).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+  }, 30_000);
+
+  it.each(['cancel', 'timeout'])('tears down the real container on %s mid-pagination', async mode => {
+    const controller = new AbortController();
+    let count = 0;
+    const onConnectorCall = jest.fn(async call => {
+      count++;
+      if (count === 1) return { type: 'connector.reply' as const, requestId: call.requestId, ok: true as const, value: { items: [1] } };
+      if (mode === 'cancel') controller.abort();
+      return new Promise<never>(() => {});
+    });
+    const result = await new DockerSandboxRunner().execute({ executionId: 'stop-pagination', input: {},
+      limits: { ...MVP_LIMITS, wallTimeMs: 3000 },
+      source: `async function main(input, api) { for(let page=1;page<=100;page++) await api.call('catalogue', {page}); return {}; }`,
+    }, { signal: controller.signal, onConnectorCall });
+    expect(count).toBe(2);
+    expect(result).toMatchObject({ ok: false, error: mode === 'cancel' ? { code: 'CANCELLED' } : { code: 'RESOURCE_LIMIT', limit: 'wallTime' } });
+  }, 15_000);
 
   it('blocks external, metadata and loopback TCP access and direct DNS', async () => {
     const result = await execute(`async function main() {
@@ -187,13 +233,13 @@ live('DockerSandboxRunner — real disposable container', () => {
       process_.stdin!.destroy();
       expect(docker('inspect', '--format', '{{.State.Running}}', name)).toBe('true');
       // No DockerSandboxRunner host timer exists in this test. PID 1 must stop it.
-      const code = execFileSync('docker', ['wait', name], { encoding: 'utf8', timeout: 20_000, windowsHide: true }).trim();
+      const code = execFileSync('docker', ['wait', name], { encoding: 'utf8', timeout: 40_000, windowsHide: true }).trim();
       expect(code).toBe('124');
     } finally {
       attach?.kill();
       docker('rm', '--force', name);
     }
-  }, 30_000);
+  }, 45_000);
 
   it('enforces memory with an actual cgroup OOM kill', async () => {
     expect(await execute('async function main() { const a=[]; while(true) a.push(Buffer.alloc(8*1024*1024,1)); }'))

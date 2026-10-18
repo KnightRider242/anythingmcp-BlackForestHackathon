@@ -107,7 +107,7 @@ describe('CODEBOUND shared boundary contracts', () => {
     expect(Object.isFrozen(parsed.inputSchema.properties)).toBe(true);
   });
 
-  it('rejects a source/hash mismatch and more than one tool binding', () => {
+  it('rejects source/hash mismatches and unsupported manifest fields', () => {
     expect(() => parseScriptSnapshot({ ...snapshot(), source: source + ' ' })).toThrow();
     expect(() => parseScriptSnapshot({ ...snapshot(), bindings: [snapshot().binding] })).toThrow();
   });
@@ -129,9 +129,12 @@ describe('CODEBOUND shared boundary contracts', () => {
     expect(sandboxExecutionRequestSchema.safeParse({ ...value, limits: { ...MVP_LIMITS, maxInputBytes: 1 } }).success).toBe(false);
   });
 
-  it('only accepts the fixed read binding and denies authority fields in IPC', () => {
+  it('accepts legacy read or explicit names, while denying authority fields in IPC', () => {
     const parsed: SandboxConnectorCall = sandboxConnectorCallSchema.parse(call());
     expect(parsed.binding).toBe('connector.read');
+    expect(sandboxConnectorCallSchema.safeParse({ ...call(), binding: 'connector.tool', toolName: 'approved_tool' }).success).toBe(true);
+    expect(sandboxConnectorCallSchema.safeParse({ ...call(), binding: 'connector.tool' }).success).toBe(false);
+    expect(sandboxConnectorCallSchema.safeParse({ ...call(), toolName: 'unexpected' }).success).toBe(false);
     for (const addition of [
       { binding: 'connector.write' }, { toolId: 'other-tool' }, { organizationId: 'other-org' },
       { executionId: 'other-run' }, { headers: {} }, { url: 'https://example.com' },

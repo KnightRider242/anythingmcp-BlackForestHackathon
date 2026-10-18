@@ -71,7 +71,14 @@ export class ScriptExecutionService implements OnModuleDestroy {
       const opened = await this.gateway.open(principal, snapshot, executionId, {
         signal, deadlineEpochMs, maxResponseBytes: MVP_LIMITS.maxConnectorResponseBytes, cache: 'bypass',
       });
-      if (!opened.ok) outcome = opened;
+      if (!opened.ok) {
+        outcome = opened;
+        await this.boundedAudit(this.audit.logInvocation({ toolId: snapshot.binding.toolId, connectorId: snapshot.binding.connectorId,
+          organizationId: principal.organizationId, userId: principal.userId,
+          mcpServerId: principal.origin.kind === 'mcp' ? principal.origin.serverId : undefined,
+          input: { executionId }, clientInfo: `codebound/${executionId}`, deduplicate: false,
+          status: opened.error.limit === 'wallTime' ? 'TIMEOUT' : 'ERROR', durationMs: Date.now() - started, error: opened.error.code }));
+      }
       else {
         session = opened.value;
         outcome = await this.runner.execute({ executionId, source: snapshot.source, input: request.input, limits: MVP_LIMITS }, {
@@ -79,15 +86,19 @@ export class ScriptExecutionService implements OnModuleDestroy {
           onConnectorCall: call => {
             const invoke = async () => {
               // Defense in depth: never rely only on the untrusted process budget.
-              if (metrics.connectorCalls >= 1) return { type: 'connector.reply' as const, requestId: call.requestId,
+              if (metrics.connectorCalls >= MVP_LIMITS.maxConnectorCalls) {
+                connectorError = { code: 'RESOURCE_LIMIT', message: 'Connector call limit exceeded', limit: 'connectorCalls' };
+                return { type: 'connector.reply' as const, requestId: call.requestId,
                 error: { code: 'RESOURCE_LIMIT' as const, message: 'Connector call limit exceeded', limit: 'connectorCalls' as const }, ok: false as const };
+              }
               metrics.connectorCalls++;
               const callStarted = Date.now();
               const reply = supervisorConnectorReplySchema.parse(await this.gateway.call(session!, call));
-              if (reply.ok) metrics.connectorResponseBytes = bytes(reply.value);
-              else connectorError = reply.error;
+              if (reply.ok) metrics.connectorResponseBytes += bytes(reply.value);
+              else if (!reply.recoverable) connectorError = reply.error;
+              const binding = this.gateway.bindingFor(session!, call) ?? snapshot.binding;
               // Metadata only. No arguments, source, credentials or response content.
-              const audit = this.audit.logInvocation({ toolId: snapshot.binding.toolId, connectorId: snapshot.binding.connectorId,
+              const audit = this.audit.logInvocation({ toolId: binding.toolId, connectorId: binding.connectorId,
                 organizationId: principal.organizationId, userId: principal.userId,
                 mcpServerId: principal.origin.kind === 'mcp' ? principal.origin.serverId : undefined,
                 input: { executionId }, clientInfo: `codebound/${executionId}`, deduplicate: false,
@@ -114,7 +125,10 @@ export class ScriptExecutionService implements OnModuleDestroy {
     finally {
       stopped.abort();
       if (session) {
-        try { await this.gateway.close(session); }
+        try {
+          metrics.connectorResponseBytes = this.gateway.responseBytes(session);
+          await this.gateway.close(session);
+        }
         catch { outcome = failure('INTERNAL_ERROR', 'Execution cleanup failed'); }
       }
       await Promise.allSettled(pending);

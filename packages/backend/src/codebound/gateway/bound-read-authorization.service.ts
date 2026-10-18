@@ -7,7 +7,7 @@ import { RolesService } from '../../roles/roles.service';
 import { McpConnectionGrantService } from '../../mcp-servers/mcp-connection-grant.service';
 import { LicenseGuardService } from '../../license/license-guard.service';
 import { isTokenRevoked } from '../../auth/auth.service';
-import type { ExecutionPrincipal, ScriptSnapshot } from '../contracts';
+import type { ExecutionPrincipal, ReadToolBinding, ScriptSnapshot } from '../contracts';
 
 export type BoundReadTool = Prisma.McpToolGetPayload<{ include: { connector: true } }>;
 
@@ -44,7 +44,10 @@ export class BoundReadAuthorization {
   ) {}
 
   /** Always read live rows, never registry snapshots or cached role decisions. */
-  async authorize(principal: ExecutionPrincipal, script: ScriptSnapshot, store: Prisma.TransactionClient = this.prisma): Promise<BoundReadTool> {
+  async authorize(principal: ExecutionPrincipal, script: ScriptSnapshot, store: Prisma.TransactionClient = this.prisma,
+    binding: Readonly<ReadToolBinding> = script.binding): Promise<BoundReadTool> {
+    if (![script.binding, ...(script.additionalBindings ?? [])].some(item => item.connectorId === binding.connectorId &&
+        item.toolId === binding.toolId && item.definitionSha256 === binding.definitionSha256)) throw new Error('Denied');
     const { userId, organizationId } = principal;
     if (principal.tokenExpiresAtMs <= Date.now() || principal.tokenIssuedAtMs > Date.now() + 5000 ||
         script.organizationId !== organizationId || script.ownerUserId !== userId) throw new Error('Denied');
@@ -52,12 +55,15 @@ export class BoundReadAuthorization {
     // authorization decisions across that await; read authorization afterwards.
     await this.license.checkLicenseActive(organizationId);
     const allowed = await this.roles.getAllowedToolIds(userId, organizationId);
-    if (allowed !== null && !allowed.includes(script.binding.toolId)) throw new Error('Denied');
+    if (allowed !== null && !allowed.includes(binding.toolId)) throw new Error('Denied');
     if (principal.origin.kind === 'mcp') {
       const { serverId, oauthClientId } = principal.origin;
+      if (principal.origin.apiKeyId && !await store.mcpApiKey.findFirst({ where: {
+        id: principal.origin.apiKeyId, organizationId, userId, mcpServerId: serverId, isActive: true,
+      }, select: { id: true } })) throw new Error('Denied');
       const server = await this.prisma.mcpServerConfig.findFirst({
         where: { id: serverId, organizationId, isActive: true,
-          connectors: { some: { connectorId: script.binding.connectorId, connector: { organizationId } } } },
+          connectors: { some: { connectorId: binding.connectorId, connector: { organizationId } } } },
         select: { id: true },
       });
       if (!server) throw new Error('Denied');
@@ -76,18 +82,27 @@ export class BoundReadAuthorization {
     if (!user || isTokenRevoked({ iat: Math.floor(principal.tokenIssuedAtMs / 1000) }, user.sessionsValidFrom)) throw new Error('Denied');
     const tool = await store.mcpTool.findFirst({
       where: {
-        id: script.binding.toolId, connectorId: script.binding.connectorId, isEnabled: true,
+        id: binding.toolId, connectorId: binding.connectorId, isEnabled: true,
         connector: { organizationId, userId, isActive: true },
       },
       include: { connector: true },
     });
-    if (!tool || tool.id !== script.binding.toolId || tool.connectorId !== script.binding.connectorId ||
+    if (!tool || tool.id !== binding.toolId || tool.connectorId !== binding.connectorId ||
         tool.connector.organizationId !== organizationId || tool.connector.userId !== userId ||
         !tool.isEnabled || !tool.connector.isActive || tool.connector.type !== 'REST' ||
-        (tool.endpointMapping as { method?: string })?.method !== 'GET' || tool.useProxy ||
+        !['GET', 'POST'].includes((tool.endpointMapping as { method?: string })?.method ?? '') || tool.useProxy ||
         !['NONE', 'BEARER_TOKEN', 'API_KEY', 'BASIC_AUTH'].includes(tool.connector.authType) ||
-        fingerprintReadTool(tool) !== script.binding.definitionSha256) throw new Error('Denied');
+        fingerprintReadTool(tool) !== binding.definitionSha256) throw new Error('Denied');
     if (principal.tokenExpiresAtMs <= Date.now()) throw new Error('Denied');
     return tool;
+  }
+
+  async authorizeAll(principal: ExecutionPrincipal, script: ScriptSnapshot, store?: Prisma.TransactionClient): Promise<BoundReadTool[]> {
+    const bindings = [script.binding, ...(script.additionalBindings ?? [])];
+    if (bindings.length > 8 || new Set(bindings.map(item => item.toolId)).size !== bindings.length) throw new Error('Denied');
+    const tools: BoundReadTool[] = [];
+    for (const binding of bindings) tools.push(await this.authorize(principal, script, store, binding));
+    if (new Set(tools.map(tool => tool.name)).size !== tools.length) throw new Error('Denied');
+    return tools;
   }
 }

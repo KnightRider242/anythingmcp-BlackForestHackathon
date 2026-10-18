@@ -71,23 +71,41 @@ Then run the official checker from `E:\Projs\codebound-kit`:
 
 ```powershell
 npm run check -- --card F1
-npm run check -- --only must
+npm run check -- --card P1 --card P2
 ```
 
-The first command checks F1 only. The second also confirms P1/P2 remain
-passing, and reports F2–F4 as the next implementation milestones.
+The first command checks F1 only. The second confirms P1/P2 remain passing.
+F2–F4 require separate implementation after F1 is confirmed.
 
 ## Local backend verification
 
 From `E:\Projs\anythingmcp-BlackForestHackathon`:
 
 ```powershell
-node --env-file=.env.codebound.local --run build:backend
+npm run codebound:build
+# Stop only the previous isolated backend on port 4001, then in its terminal:
+npm run codebound:start
+# Run focused tests in another terminal:
 cd packages/backend
 npm test -- --runInBand --runTestsByPath src/codebound/mcp/codebound-mcp-tools.service.spec.ts src/codebound/mcp/mcp-registration.spec.ts
 ```
 
-Actual official F1 compliance still requires a live check with the user's
-real local database and MCP server; unit tests mock persistence/authorization.
+Both commands load the existing root `.env.codebound.local` and explicitly
+pass its variables to npm, Prisma and Nest subprocesses. They require backend
+port 4001 and a localhost PostgreSQL URL on port 5434, and preserve the file's
+existing `JWT_SECRET` and `ENCRYPTION_KEY`. They never rewrite `.env`, create
+containers or run migrations. `codebound:start` builds first and refuses to
+start after a failed build, preventing an older compiled bridge from being used.
+Keep `.env.codebound.local` uncommitted. Stop the foreground test backend with
+Ctrl+C when finished.
+
+On Windows, `node --env-file=.env.codebound.local --run build:backend` was
+observed to lose `DATABASE_URL` before Prisma's npm subprocess. The resulting
+failed build left compiled JavaScript whose principal resolver accepted only
+JWT authentication, even though the source already supported MCP API keys.
+An existing server process also needs restarting after compilation.
+
+Actual official F1 compliance requires a live check with the kit's existing
+database and MCP server; unit tests mock persistence/authorization.
 Cloud and self-hosted use identical authorization logic. No changes to
 `ee/` or to the official `codebound-kit` repository are made.

@@ -69,8 +69,9 @@ export function openEnvVars(value: unknown): unknown {
   try {
     const opened = JSON.parse(decrypt(sealed as string, key(), AAD));
     return { ...(isPlainObject(opened) ? opened : {}), ...plain };
-  } catch (err: any) {
-    logger.error(`connector variables could not be decrypted (wrong ENCRYPTION_KEY?): ${err?.message ?? err}`);
+  } catch {
+    // JSON/crypto exceptions can quote decrypted content; keep diagnostics fixed.
+    logger.error('Connector variables could not be decrypted (wrong ENCRYPTION_KEY?)');
     return { ...plain };
   }
 }

@@ -5,6 +5,7 @@ import axios, { AxiosError } from 'axios';
 import FormData from 'form-data';
 import { fetchOutbound, OutboundFetchError } from '../../common/outbound-fetch.util';
 import { SsrfBlockedError } from '../../common/ssrf.util';
+import { Logger } from '@nestjs/common';
 
 // The file-upload path delegates its download entirely to fetchOutbound
 // (SSRF checks, size cap, timeout, non-2xx handling all live there — see
@@ -675,6 +676,26 @@ describe('RestEngine', () => {
   });
 
   describe('transient-error retry', () => {
+    it('keeps resolved credentials out of dispatch and exhausted-retry logs', async () => {
+      const debug = jest.spyOn(Logger.prototype, 'debug').mockImplementation(() => {});
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      const secret = 'private-fixture-token-83952';
+      // A zero Retry-After keeps the real bounded retry path fast.
+      mockedAxios.mockRejectedValue(new AxiosError(secret, 'ERR_BAD_RESPONSE', undefined, {},
+        { status: 503, data: { secret }, headers: { 'retry-after': '0' } } as any));
+      try {
+        await expect(engine.execute(
+          { baseUrl: 'https://api.example.com', authType: 'BEARER_TOKEN', authConfig: { token: secret } },
+          { method: 'GET', path: `/credentials/${secret}?key=${secret}` }, {},
+        )).rejects.toThrow();
+        expect(mockedAxios).toHaveBeenCalledTimes(2);
+        expect(warn).toHaveBeenCalled();
+        const logs = JSON.stringify([...debug.mock.calls, ...warn.mock.calls]);
+        expect(logs).not.toContain(secret);
+        expect(logs).not.toContain('https://');
+      } finally { debug.mockRestore(); warn.mockRestore(); mockedAxios.mockReset(); }
+    });
+
     const err = (status?: number, code?: string) =>
       new AxiosError(
         'boom',

@@ -1,4 +1,5 @@
 import { AuditService } from './audit.service';
+import { Logger } from '@nestjs/common';
 
 describe('AuditService', () => {
   let service: AuditService;
@@ -28,6 +29,20 @@ describe('AuditService', () => {
   });
 
   describe('logInvocation', () => {
+    it.each([false, true])('does not log database exception payloads (retry=%s)', async retry => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      const secret = 'private-fixture-audit-credential';
+      const diagnostic = new Error(`Prisma invocation input: ${secret}`);
+      if (retry) mockPrisma.toolInvocation.create.mockRejectedValueOnce(new Error('user_id_fkey'));
+      mockPrisma.toolInvocation.create.mockRejectedValue(diagnostic);
+      try {
+        await service.logInvocation({ toolId: 'tool-1', userId: 'user-1', input: { token: secret }, status: 'ERROR' });
+        expect(warn).toHaveBeenCalled();
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+        expect(mockPrisma.toolInvocation.create).toHaveBeenCalledTimes(retry ? 2 : 1);
+      } finally { warn.mockRestore(); }
+    });
+
     it('keeps failures from separate CODEBOUND executions independently attributable', async () => {
       mockPrisma.toolInvocation.create.mockResolvedValue({ id: 'receipt-row' });
       for (const executionId of ['execution-a', 'execution-b']) {

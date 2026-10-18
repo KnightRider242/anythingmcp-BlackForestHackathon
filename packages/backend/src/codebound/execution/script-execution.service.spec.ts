@@ -15,6 +15,7 @@ describe('CODEBOUND orchestration (mocked persistence, Docker and gateway)', () 
     persistence = { recoverInterruptedRuns: jest.fn().mockResolvedValue({ ok: true, value: null }),
       beginExecution: jest.fn().mockResolvedValue({ ok: true, value: { snapshot, finalize } }) };
     gateway = { open: jest.fn().mockResolvedValue({ ok: true, value: {} }), close: jest.fn().mockResolvedValue(undefined),
+      bindingFor: jest.fn().mockReturnValue(snapshot.binding), responseBytes: jest.fn().mockReturnValue(0),
       call: jest.fn().mockResolvedValue({ type: 'connector.reply', requestId: '1', ok: true, value: { count: 2 } }) };
     runner = { execute: jest.fn().mockResolvedValue({ ok: true, value: { count: 2 } }) };
     audit = { logInvocation: jest.fn().mockResolvedValue(undefined) };
@@ -63,6 +64,27 @@ describe('CODEBOUND orchestration (mocked persistence, Docker and gateway)', () 
     expect(audit.logInvocation).toHaveBeenCalledWith(expect.objectContaining({ userId: 'owner', organizationId: 'org', toolId: 'tool',
       deduplicate: false, status: 'ERROR', input: { executionId: expect.any(String) }, error: 'FORBIDDEN' }));
     expect(JSON.stringify(audit.logInvocation.mock.calls)).not.toContain('hidden');
+  });
+  it('keeps recoverable service errors catchable, audits the selected tool and records cumulative bytes', async () => {
+    gateway.bindingFor.mockReturnValue({ toolId: 'supplier-tool', connectorId: 'supplier' });
+    gateway.responseBytes.mockReturnValue(1234);
+    gateway.call.mockResolvedValue({ type: 'connector.reply', requestId: '1', ok: false, recoverable: true,
+      error: { code: 'CONNECTOR_ERROR', message: 'Connector operation failed' } });
+    runner.execute.mockImplementation(async (_: any, controls: any) => {
+      await controls.onConnectorCall({ type: 'connector.call', requestId: '1', binding: 'connector.tool', toolName: 'supplier_catalogue', arguments: {} });
+      return { ok: true, value: { total: 200, complete: false } };
+    });
+    expect(await execute()).toMatchObject({ ok: true, value: { status: 'succeeded', output: { total: 200, complete: false },
+      metrics: { connectorCalls: 1, connectorResponseBytes: 1234 } } });
+    expect(audit.logInvocation).toHaveBeenCalledWith(expect.objectContaining({ toolId: 'supplier-tool', connectorId: 'supplier',
+      status: 'ERROR', error: 'CONNECTOR_ERROR' }));
+  });
+  it('audits denied execution opening without source, inputs or credentials', async () => {
+    gateway.open.mockResolvedValue({ ok: false, error: { code: 'FORBIDDEN', message: 'Connector access denied' } });
+    expect(await execute()).toMatchObject({ ok: true, value: { status: 'failed', error: { code: 'FORBIDDEN' } } });
+    expect(audit.logInvocation).toHaveBeenCalledWith(expect.objectContaining({ status: 'ERROR', error: 'FORBIDDEN',
+      organizationId: 'org', toolId: 'tool', input: { executionId: expect.any(String) } }));
+    expect(runner.execute).not.toHaveBeenCalled();
   });
   it('bounds admission per owner and cancels active work on shutdown', async () => {
     let started!: () => void; const began = new Promise<void>(resolve => { started = resolve; });

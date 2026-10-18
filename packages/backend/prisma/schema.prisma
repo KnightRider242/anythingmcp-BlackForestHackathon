@@ -38,6 +38,8 @@ model CodeboundScript {
   toolId           String @map("tool_id")
   tool             McpTool @relation(fields: [toolId, connectorId], references: [id, connectorId], onDelete: Cascade, onUpdate: Restrict)
   definitionSha256 String @map("definition_sha256") @db.VarChar(64)
+  // Explicit additional capabilities; every entry is checked against live rows.
+  additionalBindings Json @default("[]") @map("additional_bindings")
   revision         Int @default(1)
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")

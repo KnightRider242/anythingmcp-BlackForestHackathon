@@ -168,15 +168,15 @@ export class AuditService implements OnModuleDestroy {
           });
           if (data.status === 'SUCCESS') this.reportActivation(data);
           return;
-        } catch (retryError: any) {
+        } catch {
           this.logger.warn(
-            `Failed to persist invocation for tool ${data.toolId} (retry): ${retryError.message}`,
+            `Failed to persist invocation for tool ${data.toolId} (retry)`,
           );
           return;
         }
       }
       this.logger.warn(
-        `Failed to persist invocation for tool ${data.toolId}: ${error.message}`,
+        `Failed to persist invocation for tool ${data.toolId}`,
       );
     }
     this.logger.debug(

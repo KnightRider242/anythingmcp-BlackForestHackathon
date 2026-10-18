@@ -77,8 +77,9 @@ export const executionLimitsSchema = z.strictObject({
   maxInputBytes: z.number().int().positive().max(MVP_LIMITS.maxInputBytes),
   maxOutputBytes: z.number().int().positive().max(MVP_LIMITS.maxOutputBytes),
   maxIpcFrameBytes: z.number().int().positive().max(MVP_LIMITS.maxIpcFrameBytes),
-  maxConnectorCalls: z.literal(1),
+  maxConnectorCalls: z.number().int().positive().max(MVP_LIMITS.maxConnectorCalls),
   maxConnectorResponseBytes: z.number().int().positive().max(MVP_LIMITS.maxConnectorResponseBytes),
+  maxTotalConnectorResponseBytes: z.number().int().positive().max(MVP_LIMITS.maxTotalConnectorResponseBytes),
   maxLogBytes: z.number().int().nonnegative().max(MVP_LIMITS.maxLogBytes),
 });
 
@@ -135,6 +136,7 @@ export const scriptDefinitionSchema = z.strictObject({
   inputSchema: boundedObject(16 * 1024),
   outputSchema: boundedObject(16 * 1024),
   binding,
+  additionalBindings: z.array(binding).max(7).optional(),
 });
 
 export const scriptSnapshotSchema = scriptDefinitionSchema.extend({
@@ -171,9 +173,10 @@ export const sandboxExecutionRequestSchema = z.strictObject({
 export const sandboxConnectorCallSchema = z.strictObject({
   type: z.literal('connector.call'),
   requestId: id,
-  binding: z.literal('connector.read'),
+  binding: z.enum(['connector.read', 'connector.tool']),
+  toolName: z.string().min(1).max(128).optional(),
   arguments: input,
-});
+}).refine(value => value.binding === 'connector.tool' ? !!value.toolName : value.toolName === undefined);
 
 export const supervisorConnectorReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({
@@ -183,7 +186,8 @@ export const supervisorConnectorReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({
     type: z.literal('connector.reply'), requestId: id, ok: z.literal(false),
     error: codeboundErrorSchema,
-  }),
+    recoverable: z.literal(true).optional(),
+  }).refine(value => !value.recoverable || value.error.code === 'CONNECTOR_ERROR'),
 ]);
 
 /** Use on complete frames only; the reader must cap chunks before buffering. */
@@ -198,8 +202,8 @@ const receipt = {
   executionId: id, scriptId: id, revision, sourceSha256: sha256,
   metrics: z.strictObject({
     wallTimeMs: z.number().finite().nonnegative(),
-    connectorCalls: z.number().int().min(0).max(1),
-    connectorResponseBytes: z.number().int().min(0).max(MVP_LIMITS.maxConnectorResponseBytes),
+    connectorCalls: z.number().int().min(0).max(MVP_LIMITS.maxConnectorCalls),
+    connectorResponseBytes: z.number().int().min(0).max(MVP_LIMITS.maxTotalConnectorResponseBytes),
     outputBytes: z.number().int().min(0).max(MVP_LIMITS.maxOutputBytes),
   }),
 };

@@ -110,6 +110,8 @@ export class DockerSandboxRunner implements SandboxRunner {
       let buffer = Buffer.alloc(0);
       let calls = 0;
       let waiting = false;
+      const requestIds = new Set<string>();
+      let responseBytes = 0;
       let logBytes = 0;
       let result: Outcome<JsonValue> | undefined;
       const finish = (value: Outcome<JsonValue>) => {
@@ -160,7 +162,9 @@ export class DockerSandboxRunner implements SandboxRunner {
         if (result) { finish(failure('SCRIPT_ERROR', 'Unexpected sandbox message')); return; }
         const call = sandboxConnectorCallSchema.safeParse(message);
         if (call.success) {
+          if (waiting || requestIds.has(call.data.requestId)) { finish(limited('connectorCalls')); return; }
           if (++calls > limits.maxConnectorCalls) { finish(limited('connectorCalls')); return; }
+          requestIds.add(call.data.requestId);
           if (Buffer.byteLength(JSON.stringify(call.data.arguments)) > limits.maxInputBytes) {
             finish(limited('inputBytes')); return;
           }
@@ -172,9 +176,11 @@ export class DockerSandboxRunner implements SandboxRunner {
             if (!reply.success || reply.data.requestId !== call.data.requestId) {
               finish(failure('CONNECTOR_ERROR', 'Invalid connector reply')); return;
             }
-            if (!reply.data.ok) { finish(failure('CONNECTOR_ERROR', 'Connector operation failed')); return; }
+            if (!reply.data.ok && !reply.data.recoverable) { finish({ ok: false, error: reply.data.error }); return; }
             const serialized = JSON.stringify(reply.data);
-            if (Buffer.byteLength(JSON.stringify(reply.data.value)) > limits.maxConnectorResponseBytes) {
+            const size = reply.data.ok ? Buffer.byteLength(JSON.stringify(reply.data.value)) : 0;
+            responseBytes += size;
+            if (size > limits.maxConnectorResponseBytes || responseBytes > limits.maxTotalConnectorResponseBytes) {
               finish(limited('connectorResponseBytes')); return;
             }
             if (Buffer.byteLength(serialized) > limits.maxIpcFrameBytes) { finish(limited('ipcFrameBytes')); return; }

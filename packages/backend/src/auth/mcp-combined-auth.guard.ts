@@ -141,13 +141,13 @@ export class McpCombinedAuthGuard implements CanActivate {
         // workspace) is a dead token: 401 with invalid_token, so the client
         // signs in again instead of retrying it.
         if (subId && !dbUser) {
-          this.logger.warn(`Rejected token for unknown user ${subId} on ${reqPath}`);
+          this.logger.warn('Rejected token for unknown user');
           return this.deny(req, res, reqPath);
         }
 
         if (dbUser && isTokenRevoked(payload, dbUser.sessionsValidFrom)) {
           this.logger.warn(
-            `Rejected revoked token for user ${dbUser.id} on ${reqPath}`,
+            `Rejected revoked token for user ${dbUser.id}`,
           );
           return this.deny(req, res, reqPath);
         }

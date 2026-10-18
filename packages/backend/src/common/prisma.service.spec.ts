@@ -1,6 +1,19 @@
 import { PrismaService } from './prisma.service';
+import { Logger } from '@nestjs/common';
 
 describe('PrismaService.tenantTx', () => {
+  it('does not log bound variables from a failed reconciliation query', async () => {
+    const svc = new PrismaService();
+    const secret = 'private-fixture-reconciliation-token';
+    jest.spyOn(svc as any, '$queryRaw').mockRejectedValue(new Error(`SQL variables: ${secret}`));
+    const log = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      expect(await svc.reconcileEnvVarsAtRest()).toEqual({ changed: 0 });
+      expect(log).toHaveBeenCalledWith('Connector variables could not be reconciled');
+      expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    } finally { log.mockRestore(); }
+  });
+
   it('sets app.current_org transaction-locally, then runs the callback', async () => {
     const svc = new PrismaService();
     const setConfigCalls: unknown[][] = [];

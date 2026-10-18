@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { EmailVerifiedGuard } from './email-verified.guard';
 
 /**
@@ -37,6 +37,18 @@ describe('EmailVerifiedGuard', () => {
     const refusal = guard.canActivate(ctx({ path: '/mcp/srv1', headers: { authorization: 'Bearer good' } }));
     await expect(refusal).rejects.toBeInstanceOf(ForbiddenException);
     await expect(refusal).rejects.toThrow(/confirm the email address.*sign in at https:\/\//);
+  });
+
+  it('does not log caller-controlled paths when refusing an unverified cloud user', async () => {
+    const { guard } = makeGuard({ verified: false });
+    const secret = 'private-fixture-path-token';
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      await expect(guard.canActivate(ctx({ path: `/mcp/${secret}`, headers: { authorization: 'Bearer good' } })))
+        .rejects.toBeInstanceOf(ForbiddenException);
+      expect(warn).toHaveBeenCalled();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+    } finally { warn.mockRestore(); }
   });
 
   it('lets a verified user through', async () => {

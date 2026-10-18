@@ -1245,8 +1245,8 @@ export class McpEndpointController {
       // `MCP-Protocol-Version: 2025-06-18` is refused with a 400, exactly as
       // it should be. Logging that at error level lets any malformed client
       // inflate the error rate and bury real failures underneath it.
-      onerror: (error) =>
-        this.logger.warn(`MCP request rejected (${label}): ${error.message}`),
+      onerror: () =>
+        this.logger.warn(`MCP request rejected (${label})`),
     });
 
     try {
@@ -1254,11 +1254,11 @@ export class McpEndpointController {
         // ERROR here is right: the adapter only calls this when it answers a
         // 500 because request conversion or the handler itself threw, which is
         // our fault rather than the caller's.
-        onerror: (error) =>
-          this.logger.error(`MCP adapter error (${label}): ${error.message}`),
+        onerror: () =>
+          this.logger.error(`MCP adapter error (${label})`),
       })(req, res, body);
-    } catch (error: any) {
-      this.logger.error(`Error handling MCP request (${label}): ${error.message}`);
+    } catch {
+      this.logger.error(`Error handling MCP request (${label})`);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
@@ -1343,9 +1343,9 @@ export class McpEndpointController {
         await session.rebuild();
       }
       await session.transport.handleRequest(req, res, body);
-    } catch (error: any) {
+    } catch {
       this.logger.error(
-        `Error routing MCP request to session ${sessionId}: ${error.message}`,
+        'Error routing MCP request to session',
       );
       if (!res.headersSent) {
         res.status(500).json({
@@ -1418,9 +1418,9 @@ export class McpEndpointController {
     try {
       await mcpServer.connect(transport);
       await transport.handleRequest(req, res, body);
-    } catch (error: any) {
+    } catch {
       this.logger.error(
-        `Error handling stateful MCP request for server ${serverId}: ${error.message}`,
+        `Error handling stateful MCP request for server ${serverId}`,
       );
       if (!res.headersSent) {
         res.status(500).json({

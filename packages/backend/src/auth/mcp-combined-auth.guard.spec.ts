@@ -1,4 +1,5 @@
 import { McpCombinedAuthGuard } from './mcp-combined-auth.guard';
+import { Logger } from '@nestjs/common';
 
 describe('McpCombinedAuthGuard', () => {
   let guard: McpCombinedAuthGuard;
@@ -86,7 +87,14 @@ describe('McpCombinedAuthGuard', () => {
       });
 
       const ctx = mockContext({ authorization: 'Bearer stale-jwt' });
-      expect(await guard.canActivate(ctx)).toBe(false);
+      const secret = 'private-fixture-request-path';
+      ctx.switchToHttp().getRequest().path = `/mcp/${secret}`;
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      try {
+        expect(await guard.canActivate(ctx)).toBe(false);
+        expect(warn).toHaveBeenCalled();
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+      } finally { warn.mockRestore(); }
     });
 
     it('accepts a token issued after the revocation cutover', async () => {
@@ -229,11 +237,19 @@ describe('McpCombinedAuthGuard', () => {
 
     it('answers 401 invalid_token for a token whose user no longer exists, so the client signs in again', async () => {
       mockConfig.get.mockReturnValue(undefined);
-      mockAuth.verifyToken.mockReturnValue({ sub: 'ghost', user_data: {} });
+      const secret = 'private-fixture-unknown-subject';
+      mockAuth.verifyToken.mockReturnValue({ sub: secret, user_data: {} });
       mockPrisma.user.findUnique.mockResolvedValue(null);
 
       const ctx = mockContext({ authorization: 'Bearer oauth-token' });
-      const result = await guard.canActivate(ctx);
+      ctx.switchToHttp().getRequest().path = `/mcp/${secret}`;
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      let result;
+      try {
+        result = await guard.canActivate(ctx);
+        expect(warn).toHaveBeenCalled();
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+      } finally { warn.mockRestore(); }
 
       expect(result).toBe(false);
       const res = ctx.switchToHttp().getResponse();

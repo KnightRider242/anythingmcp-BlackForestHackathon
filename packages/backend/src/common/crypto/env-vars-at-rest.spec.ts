@@ -8,6 +8,7 @@ import {
   sealEnvVars,
 } from './env-vars-at-rest';
 import { encrypt } from './encryption.util';
+import { Logger } from '@nestjs/common';
 
 const KEY = 'k'.repeat(48);
 
@@ -35,6 +36,17 @@ describe('connector variables at rest', () => {
     expect(openEnvVars({ A: '1' })).toEqual({ A: '1' });
     expect(openEnvVars(null)).toBeNull();
     expect(openEnvVars({})).toEqual({});
+  });
+
+  it('does not log decrypted content when it is invalid JSON', () => {
+    const secret = 'private-fixture-decrypted-token';
+    const log = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      const sealed = { [ENC_KEY]: encrypt(secret, KEY, 'connectors.env_vars') };
+      expect(openEnvVars(sealed)).toEqual({});
+      expect(log).toHaveBeenCalled();
+      expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    } finally { log.mockRestore(); }
   });
 
   it('lets keys added next to the ciphertext (by SQL) win, until the next save encrypts them', () => {

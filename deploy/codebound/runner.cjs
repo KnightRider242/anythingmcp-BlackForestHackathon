@@ -9,7 +9,7 @@ const status = require('node:fs').readFileSync('/proc/self/status', 'utf8');
 if (process.getuid() !== 65534 || !/^CapEff:\s+0+$/m.test(status) ||
     !/^NoNewPrivs:\s+1$/m.test(status) || !/^Seccomp:\s+2$/m.test(status)) exit(125);
 let started = false;
-let requested = false;
+let requested = 0;
 let pending;
 let limits;
 
@@ -38,25 +38,31 @@ lines.on('line', async (line) => {
   try {
     const message = JSON.parse(line);
     if (started) {
-      if (!pending || message.type !== 'connector.reply' || message.requestId !== 'read-1') throw new Error();
+      if (!pending || message.type !== 'connector.reply' || message.requestId !== pending.requestId) throw new Error();
       const { resolve, reject } = pending;
       pending = undefined;
       if (message.ok) resolve(message.value);
-      else reject(new Error('Connector operation failed'));
+      else reject(Object.assign(new Error('Connector operation failed'), { code: 'CONNECTOR_ERROR' }));
       return;
     }
     started = true;
     limits = message.limits;
-    const api = Object.freeze({ read: async (arguments_) => {
-      if (requested) {
+    const call = async (toolName, arguments_) => {
+      if (pending || requested >= limits.maxConnectorCalls) {
         send({ type: 'error', code: 'RESOURCE_LIMIT', limit: 'connectorCalls' });
         exit(1);
       }
-      requested = true;
+      requested++;
       assertJson(arguments_);
-      const reply = new Promise((resolve, reject) => { pending = { resolve, reject }; });
-      send({ type: 'connector.call', requestId: 'read-1', binding: 'connector.read', arguments: arguments_ });
+      const requestId = 'read-' + requested;
+      const reply = new Promise((resolve, reject) => { pending = { resolve, reject, requestId }; });
+      send({ type: 'connector.call', requestId, binding: toolName === undefined ? 'connector.read' : 'connector.tool',
+        ...(toolName === undefined ? {} : { toolName }), arguments: arguments_ });
       return reply;
+    };
+    const api = Object.freeze({ read: arguments_ => call(undefined, arguments_), call: (name, arguments_) => {
+      if (typeof name !== 'string' || !name || name.length > 128) throw new Error('Invalid tool');
+      return call(name, arguments_);
     } });
     // Code evaluation occurs ONLY in this disposable container, never in NestJS.
     const run = new Function('input', 'api', '"use strict";\n' + message.source + '\nreturn main(input, api);');

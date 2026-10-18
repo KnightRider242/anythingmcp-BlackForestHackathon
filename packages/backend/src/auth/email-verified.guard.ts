@@ -84,7 +84,7 @@ export class EmailVerifiedGuard implements CanActivate {
     if (!dbUser) return true;
     if (!dbUser.emailVerified) {
       if (path.startsWith('/mcp')) {
-        this.logger.warn(`Refused ${path}: user ${userId} has not verified their email`);
+        this.logger.warn(`Refused MCP request: user ${userId} has not verified their email`);
         // An AI client shows this text to the person, who otherwise only sees
         // the connection fail: on 9-10 Oct 2026 seven people who had connected
         // Claude retried up to 122 times without knowing what was missing.

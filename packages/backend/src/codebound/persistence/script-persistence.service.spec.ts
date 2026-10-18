@@ -69,6 +69,20 @@ describe('CODEBOUND persistence validation (database mocked)', () => {
       .toMatchObject({ ok: false, error: { code: 'INVALID_INPUT' } });
     expect(s.db.codeboundScript.create).not.toHaveBeenCalled();
   });
+  it('persists the explicit additional manifest only after authorizing every binding', async () => {
+    const s = setup();
+    s.authorization.authorize.mockImplementation(async (_p: any, _script: any, _store: any, binding: any) =>
+      ({ name: binding.toolId, connector: { envVars: {} } }));
+    const additional = { connectorId: 'supplier', toolId: 'supplier-prices', definitionSha256: 'b'.repeat(64) };
+    const result = await s.service.create(principal(), { ...definition(), additionalBindings: [additional] });
+    expect(result).toMatchObject({ ok: true, value: { additionalBindings: [additional] } });
+    expect(s.authorization.authorize).toHaveBeenCalledTimes(2);
+    expect(s.db.codeboundScript.create.mock.calls[0][0].data.additionalBindings).toEqual([additional]);
+    s.authorization.authorize.mockRejectedValueOnce(new Error('foreign workspace'));
+    expect(await s.service.create(principal(), { ...definition(), additionalBindings: [additional] }))
+      .toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(s.db.codeboundScript.create).toHaveBeenCalledTimes(1);
+  });
 
   it('fails closed on revoked membership and invalid bindings with sanitized errors', async () => {
     const s = setup(); s.db.user.findFirst.mockResolvedValueOnce(null);
@@ -122,7 +136,7 @@ describe('CODEBOUND persistence validation (database mocked)', () => {
 
   it.each(['calls', 'bytes', 'time', 'nan', 'status'])('rejects invalid %s completion', async change => {
     const s = setup(); const value: any = { status: 'succeeded', metrics: { ...metrics } };
-    if (change === 'calls') value.metrics.connectorCalls = 2;
+    if (change === 'calls') value.metrics.connectorCalls = 129;
     if (change === 'bytes') value.metrics.outputBytes = 16385;
     if (change === 'time') value.metrics.wallTimeMs = 86400001;
     if (change === 'nan') value.metrics.wallTimeMs = NaN;

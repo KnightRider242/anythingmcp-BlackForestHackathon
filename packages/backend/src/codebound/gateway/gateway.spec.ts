@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { AxiosError } from 'axios';
 import { BoundReadAuthorization, fingerprintReadTool } from './bound-read-authorization.service';
 import type { BoundReadTool } from './bound-read-authorization.service';
-import { BoundRestExecutor } from './bound-rest-executor.service';
+import { BoundRestExecutor, allowsCodeboundTestHttp } from './bound-rest-executor.service';
 import { AuthorizedConnectorGatewayService } from './authorized-connector-gateway.service';
 import { parseScriptSnapshot } from '../contracts.validation';
 import { MVP_LIMITS } from '../contracts';
@@ -36,7 +36,7 @@ const script = (definition = tool()) => {
     name: 'Read tasks', description: '', source,
     sourceSha256: createHash('sha256').update(source).digest('hex'),
     inputSchema: {}, outputSchema: {},
-    binding: { connectorId: 'connector-a', toolId: 'tool-a', definitionSha256: fingerprintReadTool(definition) },
+    binding: { connectorId: definition.connectorId, toolId: definition.id, definitionSha256: fingerprintReadTool(definition) },
   });
 };
 const controls = (): ConnectorCallControls => ({
@@ -103,7 +103,7 @@ describe('CODEBOUND live authorization checks (database mocked)', () => {
     if (change === 'enabled') s.row.isEnabled = false;
     if (change === 'active') s.row.connector.isActive = false;
     if (change === 'engine') s.row.connector.type = 'MCP';
-    if (change === 'method') s.row.endpointMapping = { method: 'POST', path: '/tasks' };
+    if (change === 'method') s.row.endpointMapping = { method: 'DELETE', path: '/tasks' };
     if (change === 'auth') s.row.connector.authType = 'OAUTH2';
     if (change === 'proxy') s.row.useProxy = true;
     if (change === 'mapping') s.row.endpointMapping = { method: 'GET', path: '/changed' };
@@ -213,9 +213,8 @@ describe('CODEBOUND gateway session and call accounting', () => {
     const first = s.gateway.call(s.session, call());
     const second = await s.gateway.call(s.session, call());
     expect(second).toMatchObject({ ok: false, error: { code: 'RESOURCE_LIMIT', limit: 'connectorCalls' } });
-    expect(await first).toEqual({ type: 'connector.reply', requestId: 'request-a', ok: true, value: { tasks: [{ priority: 1 }] } });
-    expect(http).toHaveBeenCalledTimes(1);
-    expect(s.prisma.user.findFirst).toHaveBeenCalledTimes(2);
+    expect(await first).toMatchObject({ ok: false });
+    expect(http).not.toHaveBeenCalled();
     await s.gateway.close(s.session);
   });
 
@@ -345,5 +344,132 @@ describe('CODEBOUND gateway session and call accounting', () => {
     expect(await s.gateway.call(s.session, call())).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
     expect(http).not.toHaveBeenCalled();
     await s.gateway.close(s.session);
+  });
+});
+
+describe('CODEBOUND multi-tool capabilities and bounded pagination', () => {
+  const named = (name: string, index = 1, args: any = {}) => ({ type: 'connector.call' as const,
+    requestId: `page-${index}`, binding: 'connector.tool' as const, toolName: name, arguments: args });
+  async function open(s = setup(), snapshot = script(), p = principal(), c = controls()) {
+    const result = await s.gateway.open(p, snapshot, 'multi-tool-test', c);
+    if (!result.ok) throw new Error('Fixture open failed');
+    return { ...s, session: result.value };
+  }
+
+  it.each(['mock_payroll_list_salaries', 'tool-a', 'foreign-tool-internal-id'])('denies unbound name or internal ID %s', async name => {
+    const s = await open();
+    expect(await s.gateway.call(s.session, named(name))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(http).not.toHaveBeenCalled();
+    await s.gateway.close(s.session);
+  });
+
+  it('rejects a workspace B binding attached to an A script', async () => {
+    const s = setup(); const foreign = tool();
+    foreign.id = 'foreign-tool'; foreign.connectorId = 'foreign-connector'; foreign.connector.organizationId = 'org-b';
+    const binding = { toolId: foreign.id, connectorId: foreign.connectorId, definitionSha256: fingerprintReadTool(foreign) };
+    const snapshot = parseScriptSnapshot({ ...script(), additionalBindings: [binding] });
+    s.prisma.mcpTool.findFirst.mockImplementation(async query => query.where?.id === 'tool-a' ? s.row : foreign);
+    expect(await s.gateway.open(principal(), snapshot, 'foreign', controls())).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it('calls only an approved POST body mapping and keeps the legacy primary read', async () => {
+    const s = setup(); const post = tool(); post.id = 'prices'; post.name = 'mock_supplier_get_prices';
+    post.parameters = { type: 'object', properties: { skus: { type: 'array', items: { type: 'string' } } }, required: ['skus'] };
+    post.endpointMapping = { method: 'POST', path: '/prices', bodyMapping: { skus: '$skus' } };
+    s.prisma.mcpTool.findFirst.mockImplementation(async query => query.where?.id === 'prices' ? post : s.row);
+    const snapshot = parseScriptSnapshot({ ...script(), additionalBindings: [{ toolId: post.id,
+      connectorId: post.connectorId, definitionSha256: fingerprintReadTool(post) }] });
+    const opened = await open(s, snapshot);
+    expect(await s.gateway.call(opened.session, named(post.name, 1, { skus: ['sku-1'] }))).toMatchObject({ ok: true });
+    expect(http).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'POST', data: { skus: ['sku-1'] } }), expect.anything());
+    expect(await s.gateway.call(opened.session, { ...call(), requestId: 'legacy-read' })).toMatchObject({ ok: true });
+    // A live definition change invalidates even an additional approved capability.
+    post.endpointMapping = { method: 'POST', path: '/other', bodyMapping: { skus: '$skus' } };
+    expect(await s.gateway.call(opened.session, named(post.name, 3, { skus: [] }))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(http).toHaveBeenCalledTimes(2);
+    await s.gateway.close(opened.session);
+  });
+
+  it('denies a key revoked between pages', async () => {
+    const s = setup(); const p = principal(); p.origin = { kind: 'mcp', serverId: 'server-a', oauthClientId: null, apiKeyId: 'key-id' };
+    const keys = { findFirst: jest.fn().mockResolvedValue({ id: 'key-id' }) };
+    Object.assign(s.prisma, { mcpApiKey: keys });
+    const opened = await open(s, script(), p);
+    expect(await s.gateway.call(opened.session, named(s.row.name))).toMatchObject({ ok: true });
+    keys.findFirst.mockResolvedValue(null);
+    expect(await s.gateway.call(opened.session, named(s.row.name, 2))).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(http).toHaveBeenCalledTimes(1);
+    await s.gateway.close(opened.session);
+  });
+
+  it('denies Carol Staff access to an otherwise bound Payroll tool', async () => {
+    const s = setup(); const carol = principal(); carol.userId = 'carol';
+    s.row.id = 'payroll'; s.row.name = 'mock_payroll_list_salaries'; s.row.connector.userId = 'carol';
+    s.roles.getAllowedToolIds.mockResolvedValue(['erp-ping', 'supplier-catalogue']);
+    const snapshot = parseScriptSnapshot({ ...script(s.row), ownerUserId: 'carol' });
+    expect(await s.gateway.open(carol, snapshot, 'carol-staff', controls())).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    expect(http).not.toHaveBeenCalled();
+  });
+
+  it('permits sanitized 503 recovery but never treats credential echoes as recoverable', async () => {
+    const s = await open();
+    http.mockResolvedValueOnce({ status: 503, data: { error: 'Temporarily unavailable' } } as any);
+    expect(await s.gateway.call(s.session, named(s.row.name))).toMatchObject({ ok: false, recoverable: true,
+      error: { code: 'CONNECTOR_ERROR', message: 'Connector operation failed' } });
+    expect(await s.gateway.call(s.session, named(s.row.name, 2))).toMatchObject({ ok: true });
+    http.mockResolvedValueOnce({ status: 503, data: { error: 'credential-canary-12345' } } as any);
+    const denied = await s.gateway.call(s.session, named(s.row.name, 3));
+    expect(denied).toMatchObject({ ok: false, error: { code: 'CONNECTOR_ERROR' } });
+    expect(denied).not.toHaveProperty('recoverable');
+    expect(JSON.stringify(denied)).not.toContain('credential-canary');
+    await s.gateway.close(s.session);
+  });
+
+  it('stops at the connector-call ceiling without an extra HTTP request', async () => {
+    const s = await open();
+    for (let index = 1; index <= MVP_LIMITS.maxConnectorCalls; index++) {
+      expect(await s.gateway.call(s.session, named(s.row.name, index))).toMatchObject({ ok: true });
+    }
+    expect(await s.gateway.call(s.session, named(s.row.name, 129))).toMatchObject({ ok: false,
+      error: { code: 'RESOURCE_LIMIT', limit: 'connectorCalls' } });
+    expect(http).toHaveBeenCalledTimes(128);
+    await s.gateway.close(s.session);
+  });
+
+  it('bounds cumulative bytes across pages, including failed pages', async () => {
+    const s = await open();
+    http.mockResolvedValue({ status: 503, data: { message: 'x'.repeat(500_000) } } as any);
+    for (let index = 1; index <= 16; index++) {
+      expect(await s.gateway.call(s.session, named(s.row.name, index))).toMatchObject({ recoverable: true });
+    }
+    expect(s.gateway.responseBytes(s.session)).toBeGreaterThan(8_000_000);
+    expect(await s.gateway.call(s.session, named(s.row.name, 17))).toMatchObject({ ok: false,
+      error: { code: 'RESOURCE_LIMIT', limit: 'connectorResponseBytes' } });
+    await s.gateway.close(s.session);
+  });
+
+  it('honors cancellation and deadlines after a successful pagination request', async () => {
+    const controller = new AbortController(); const s = await open(setup(), script(), principal(), { ...controls(), signal: controller.signal });
+    expect(await s.gateway.call(s.session, named(s.row.name))).toMatchObject({ ok: true });
+    controller.abort();
+    expect(await s.gateway.call(s.session, named(s.row.name, 2))).toMatchObject({ ok: false, error: { code: 'CANCELLED' } });
+    expect(http).toHaveBeenCalledTimes(1);
+    await s.gateway.close(s.session);
+    const timed = await open(setup(), script(), principal(), { ...controls(), deadlineEpochMs: Date.now() + 150 });
+    await new Promise(resolve => setTimeout(resolve, 170));
+    expect(await timed.gateway.call(timed.session, named(timed.row.name))).toMatchObject({ ok: false, error: { code: 'RESOURCE_LIMIT', limit: 'wallTime' } });
+    await timed.gateway.close(timed.session);
+  });
+
+  it('restricts local HTTP opt-in to exact kit origins in self-hosted development', () => {
+    const env = { NODE_ENV: 'development', CODEBOUND_TEST_HTTP_ORIGINS: 'http://localhost:4102,http://localhost:4199' };
+    expect(allowsCodeboundTestHttp(new URL('http://localhost:4102'), env)).toBe(true);
+    for (const url of ['http://localhost:4199', 'http://localhost:80', 'http://127.0.0.1:4102', 'http://169.254.169.254:4102', 'http://evil.invalid:4102']) {
+      expect(allowsCodeboundTestHttp(new URL(url), env)).toBe(false);
+    }
+    expect(allowsCodeboundTestHttp(new URL('http://localhost:4102'), { ...env, NODE_ENV: 'production' })).toBe(false);
+    expect(allowsCodeboundTestHttp(new URL('http://localhost:4102'), { ...env, DEPLOYMENT_MODE: 'cloud' }, { isSelfHosted: () => false })).toBe(false);
+    expect(allowsCodeboundTestHttp(new URL('http://localhost:4102'), {})).toBe(false);
   });
 });
