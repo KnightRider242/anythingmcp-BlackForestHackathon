@@ -1,6 +1,10 @@
-# CODEBOUND — AnythingMCP codebase and architecture guide
+# CODEBOUND — Architecture and codebase guide
 
-> **Status (2026-10-17):** Contracts, isolated sandbox, gateway, [persistence](PERSISTENCE.md), [execution](EXECUTION.md), [per-server MCP tools](MCP.md), [management API/UI](MANAGEMENT.md) and [marketplace script installation](MARKETPLACE.md) are present on `feat/codebound-lifecycle`. Hacker News installs one owner-scoped summary script through the dashboard marketplace. Global/shared MCP script exposure remains pending. Paths are repository-relative. The historical assessment below contains earlier milestone notes; use the linked milestone documents for current implementation details.
+> **Current, verified state (18 October 2026):** CODEBOUND implements processor chains (P1/P2), saved typed MCP script tools (F1), real multi-tool ERP/Supplier/Carrier workflows (F2–F4), isolated Docker execution, permission checks, management APIs/UI, execution receipts and audits. **6/6 mandatory checks, 3/3 official secret scans and live A1–A11 security verification passed.** Optional F5/secret injection is not implemented.
+
+**For an up-to-date, copy/paste setup and clean Linux build guide, start with [CODEBOUND QUICKSTART](QUICKSTART.md).** For detailed implementation and live evidence see [F2–F4 report](F234_IMPLEMENTATION_REPORT.md) and [attack-card verification](ATTACK_CARD_VERIFICATION_REPORT.md).
+
+**Historical context:** The numbered sections below were written while the initial one-call, one-tool prototype was still being designed. Statements such as “NOT implemented yet,” “one REST GET tool” or “MCP integration pending” describe **past milestone status, not the current code**. They are retained for architecture/design history. Trust the quickstart and latest verification reports for current behavior and deployment boundaries.
 
 ## 1. What we're building
 
