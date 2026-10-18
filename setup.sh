@@ -93,9 +93,9 @@ generate_secret() {
 }
 
 generate_key_32() {
-  # Exactly 32 characters (ASCII) for AES-256 key
-  openssl rand -base64 32 2>/dev/null | head -c 32 \
-    || LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32
+  # 24 random bytes encode to exactly 32 printable Base64 characters.
+  # Avoid a head pipeline that can SIGPIPE with 'set -o pipefail'.
+  openssl rand -base64 24
 }
 
 wait_for_health() {
@@ -146,14 +146,12 @@ main() {
   echo -e "${DIM}  This script will configure AnythingMCP and its CODEBOUND features.${NC}"
   echo ""
 
-  # Check for existing .env
+  # Never replace credentials in an existing AnythingMCP installation.
   if [ -f .env ]; then
-    warn "An existing .env file was found."
-    if ! ask_yn "Overwrite it?" "n"; then
-      info "Setup cancelled. For a safe CODEBOUND upgrade, use: bash setup.sh --add-codebound"
-      exit 0
-    fi
-    echo ""
+    warn "An existing .env file was found. Its database and secrets will be preserved."
+    info "To add CODEBOUND, run: bash setup.sh --add-codebound"
+    info "For a fresh install, back up and move the existing .env yourself first."
+    exit 1
   fi
 
   # ── Step 1: Deployment Mode ──────────────────────────────────────────────
