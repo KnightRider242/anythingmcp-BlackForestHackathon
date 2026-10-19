@@ -95,7 +95,7 @@ if (current.baseUrl !== connector.baseUrl || current.type !== 'REST' || current.
 for (const expected of connector.tools) {
   const toolMatches = current.tools.filter(tool => tool.name === expected.name);
   if (toolMatches.length !== 1 ||
-      JSON.stringify(toolMatches[0].endpointMapping) !== JSON.stringify(expected.endpointMapping) ||
+      canonical(toolMatches[0].endpointMapping) !== canonical(expected.endpointMapping) ||
       toolMatches[0].isEnabled !== true) {
     throw new Error('Missing or modified approved tool: ' + expected.name + '. Refusing to overwrite existing definitions.');
   }
@@ -129,7 +129,7 @@ const definition = {
   outputSchema: workflow.outputSchema,
   binding: approved[0], additionalBindings: approved.slice(1),
 };
-const canonical = value => JSON.stringify(normalize(value));
+function canonical(value) { return JSON.stringify(normalize(value)); }
 function normalize(value) {
   if (Array.isArray(value)) return value.map(normalize);
   if (value && typeof value === 'object') {
