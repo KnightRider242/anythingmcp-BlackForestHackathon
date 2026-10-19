@@ -29,6 +29,10 @@ export class ScriptManagementController {
       throw new HttpException({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Unable to load bindings' } }, 500);
     }
   }
+  @Get('runs')
+  async runs(@Req() req: DashboardRequest, @Query() page: ScriptPageDto) {
+    return this.result(await this.persistence.listRunReceipts(dashboardPrincipal(req, this.auth), page.afterId));
+  }
   @Get('scripts')
   async list(@Req() req: DashboardRequest, @Query() page: ScriptPageDto) {
     return this.result(await this.persistence.list(dashboardPrincipal(req, this.auth), { ...page, limit: 20 }));

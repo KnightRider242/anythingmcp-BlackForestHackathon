@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
 import { ApiError, codebound, type SavedScript, type ScriptBinding, type ScriptDefinition, type ScriptRun } from '@/lib/api';
 import { AppShell } from '@/components/app-shell';
@@ -28,7 +29,11 @@ function jsonObject(text: string): Record<string, unknown> {
 
 export default function ScriptsPage() {
   const { token, user, isLoading } = useAuth();
-  return <AppShell title="CODEBOUND Scripts" subtitle="Personal scripts · one read-only connector call · 16 KiB JSON result">
+  return <AppShell title="CODEBOUND Scripts" subtitle="Versioned workflows · approved REST tools · isolated Docker execution">
+    <nav aria-label="CODEBOUND" className="mb-5 flex gap-2 text-sm">
+      <span aria-current="page" className="rounded-lg bg-[var(--surface-2)] px-4 py-2 font-semibold">Scripts</span>
+      <Link href="/scripts/runs" className="rounded-lg border border-[var(--border)] px-4 py-2 hover:bg-[var(--surface-2)]">Runs & insights</Link>
+    </nav>
     {isLoading ? <p>Loading session…</p> : token && user ?
       <ScriptManager key={`${token}:${user.id}:${user.organizationId}`} token={token} /> : <p>Sign in to manage scripts.</p>}
   </AppShell>;
@@ -43,6 +48,7 @@ function ScriptManager({ token }: { token: string }) {
   const [scriptCursor, setScriptCursor] = useState<string | undefined>();
   const [selected, setSelected] = useState<SavedScript | null>(null);
   const [form, setForm] = useState(initial);
+  const [extraToolIds, setExtraToolIds] = useState<string[]>([]);
   const [input, setInput] = useState('{}');
   const [result, setResult] = useState<ScriptRun | null>(null);
   const [error, setError] = useState('');
@@ -61,6 +67,7 @@ function ScriptManager({ token }: { token: string }) {
 
   function edit(script: SavedScript | null) {
     setSelected(script); setResult(null); setError(''); setConfirmDelete(false);
+    setExtraToolIds(script?.additionalBindings?.map(binding => binding.toolId) ?? []);
     setForm(script ? { name: script.name, description: script.description, source: script.source,
       inputSchema: JSON.stringify(script.inputSchema, null, 2), outputSchema: JSON.stringify(script.outputSchema, null, 2), toolId: script.binding.toolId } : initial);
   }
@@ -75,9 +82,20 @@ function ScriptManager({ token }: { token: string }) {
       // Existing binding remains usable only while persistence's live checks approve it.
       const chosen = binding ?? (selected?.binding.toolId === form.toolId ? selected.binding : undefined);
       if (!chosen) throw new Error('Select tool');
+      // Preserve existing additional capabilities unless explicitly removed by the user.
+      // Resolve fresh approved fingerprints where available; the backend always reauthorizes.
+      const savedBindings = [selected?.binding, ...(selected?.additionalBindings ?? [])].filter(
+        (value): value is ScriptDefinition['binding'] => !!value);
+      const additionalBindings = extraToolIds.filter(id => id !== chosen.toolId).map(id => {
+        const approved = bindings.find(tool => tool.binding.toolId === id)?.binding;
+        const existing = savedBindings.find(tool => tool.toolId === id);
+        if (!approved && !existing) throw new Error('Missing additional tool');
+        return (approved ?? existing)!;
+      });
       definition = { name: form.name, description: form.description, source: form.source,
-        inputSchema: jsonObject(form.inputSchema), outputSchema: jsonObject(form.outputSchema), binding: chosen };
-    } catch { setError('Select an authorized tool and enter valid JSON objects for both schemas.'); return; }
+        inputSchema: jsonObject(form.inputSchema), outputSchema: jsonObject(form.outputSchema),
+        binding: chosen, additionalBindings };
+    } catch { setError('Select authorized tools and enter valid JSON objects for both schemas.'); return; }
     await action(async () => {
       const saved = selected ? await codebound.update(token, selected, definition) : await codebound.create(token, definition);
       setScripts(rows => [...rows.filter(s => s.id !== saved.id), saved].sort((a, b) => a.id.localeCompare(b.id)));
@@ -85,7 +103,10 @@ function ScriptManager({ token }: { token: string }) {
     });
   }
   const dirty = !selected || form.name !== selected.name || form.description !== selected.description || form.source !== selected.source ||
-    form.toolId !== selected.binding.toolId || form.inputSchema !== JSON.stringify(selected.inputSchema, null, 2) || form.outputSchema !== JSON.stringify(selected.outputSchema, null, 2);
+    form.toolId !== selected.binding.toolId || form.inputSchema !== JSON.stringify(selected.inputSchema, null, 2) ||
+    form.outputSchema !== JSON.stringify(selected.outputSchema, null, 2) ||
+    JSON.stringify(extraToolIds.filter(id => id !== form.toolId)) !== JSON.stringify(
+      (selected?.additionalBindings ?? []).map(binding => binding.toolId).filter(id => id !== form.toolId));
 
   return <div className="space-y-5">
     {error && <p role="alert" aria-label="Script error" className="rounded-lg border border-[var(--danger)] p-3 text-sm">{error}</p>}
@@ -109,12 +130,34 @@ function ScriptManager({ token }: { token: string }) {
         <fieldset disabled={busy} className="space-y-4">
           <label className="block text-sm">Name<input className={control} maxLength={128} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
           <label className="block text-sm">Description<input className={control} maxLength={1024} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label>
-          <label className="block text-sm">Connector / GET tool<select className={control} value={form.toolId} onChange={e => setForm({ ...form, toolId: e.target.value })}>
+          <label className="block text-sm">Primary approved connector tool<select className={control} value={form.toolId} onChange={e => setForm({ ...form, toolId: e.target.value })}>
             <option value="">Select an authorized tool</option>
             {selected && !bindings.some(b => b.binding.toolId === selected.binding.toolId) && <option value={selected.binding.toolId}>Saved binding (authorization checked on save/run)</option>}
             {bindings.map(b => <option key={b.binding.toolId} value={b.binding.toolId}>{b.connectorName} / {b.toolName}</option>)}
           </select></label>
-          {!bindings.length && <p className="text-sm">No eligible tools on this page. Add an owned REST GET connector or load more tools.</p>}
+          {!bindings.length && <p className="text-sm">No eligible tools on this page. Add an owned REST connector or load more tools.</p>}
+          <div className="rounded-lg border border-[var(--border)] p-3">
+            <p className="text-sm font-semibold">Additional approved connector tools</p>
+            <p className="mb-2 text-xs text-[var(--text-3)]">Saved tool bindings are preserved when editing. Only uncheck a tool if you intentionally want to remove its access.</p>
+            <div className="grid gap-2 md:grid-cols-2">
+              {bindings.filter(tool => tool.binding.toolId !== form.toolId).map(tool => (
+                <label key={tool.binding.toolId} className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" className="mt-1" checked={extraToolIds.includes(tool.binding.toolId)}
+                    onChange={e => setExtraToolIds(ids => e.target.checked
+                      ? [...ids.filter(id => id !== tool.binding.toolId), tool.binding.toolId]
+                      : ids.filter(id => id !== tool.binding.toolId))} />
+                  <span>{tool.connectorName} / {tool.toolName}</span>
+                </label>
+              ))}
+              {extraToolIds.filter(id => id !== form.toolId && !bindings.some(tool => tool.binding.toolId === id)).map(id => (
+                <label key={id} className="flex items-start gap-2 text-sm text-[var(--text-2)]">
+                  <input type="checkbox" className="mt-1" checked
+                    onChange={() => setExtraToolIds(ids => ids.filter(item => item !== id))} />
+                  <span>Previously saved tool ({id.slice(0, 8)}…) — approval will be rechecked</span>
+                </label>
+              ))}
+            </div>
+          </div>
           {bindingCursor && <Button variant="secondary" onClick={() => action(async () => {
             const page = await codebound.bindings(token, bindingCursor); setBindings(old => [...old, ...page.items]); setBindingCursor(page.nextCursor);
           })}>More tools</Button>}
@@ -139,7 +182,16 @@ function ScriptManager({ token }: { token: string }) {
           {dirty && <p className="text-xs text-[var(--text-3)]">Save changes before running.</p>}
         </fieldset>
         {busy && <p role="status">Working…</p>}
-        {result && <div role="status"><p>Execution {result.status} · {result.executionId}</p><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[var(--surface-2)] p-3 text-sm">{JSON.stringify(result.status === 'succeeded' ? result.output : result.error, null, 2)}</pre></div>}
+        {result && <div role="status">
+          <p>Execution {result.status} · {result.executionId}</p>
+          {result.metrics && <p className="mt-1 text-xs text-[var(--text-2)]">
+            {result.metrics.connectorCalls} connector calls · {result.metrics.wallTimeMs.toFixed(0)} ms ·
+            {' '}{result.metrics.connectorResponseBytes.toLocaleString()} B received ·
+            {' '}{result.metrics.outputBytes.toLocaleString()} B returned
+          </p>}
+          <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[var(--surface-2)] p-3 text-sm">{JSON.stringify(result.status === 'succeeded' ? result.output : result.error, null, 2)}</pre>
+          <Link href="/scripts/runs" className="mt-2 inline-block text-sm text-[var(--brand)] hover:underline">View run history and data insights →</Link>
+        </div>}
       </section>
     </div>}
   </div>;
