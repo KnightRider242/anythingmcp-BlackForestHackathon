@@ -1,0 +1,31 @@
+name: CODEBOUND live catalogue demo checks
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/codebound-openfoodfacts-*'
+      - 'scripts/install-codebound-openfoodfacts.mjs'
+      - '.github/workflows/codebound-live-catalogue.yml'
+  push:
+    branches: [feat/openfoodfacts-live-catalogue]
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: |
+          node --check scripts/codebound-openfoodfacts-workflow.mjs
+          node --check scripts/install-codebound-openfoodfacts.mjs
+          node --check scripts/codebound-openfoodfacts-workflow.test.mjs
+      - name: Bounded workflow regression tests (mocked data; no network calls)
+        run: node --test scripts/codebound-openfoodfacts-workflow.test.mjs
+      - name: Dry-run provisioner performs no changes
+        run: node scripts/install-codebound-openfoodfacts.mjs --dry-run

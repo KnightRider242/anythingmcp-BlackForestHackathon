@@ -26,6 +26,14 @@ deploys CODEBOUND migrations and preserves existing credentials/data. It does
 still lacks a trusted supervisor, so its CODEBOUND script execution is unavailable.
 Read [portable setup and security limitations](docs/codebound/PORTABLE_SETUP.md).
 
+**Real public-data example:** The [Open Food Facts live catalogue demo](docs/codebound/OPENFOODFACTS_DEMO.md)
+installs two HTTPS read-only connector tools and a bounded multi-tool CODEBOUND
+script for product-category sampling, nutrition-field coverage and barcode
+enrichment. It uses actual public API data when run, no hackathon mocks or API
+key, and includes authenticated provisioning, a dedicated MCP server, tests and
+API rate-limit/ODbL guidance. Live execution on your local setup is an opt-in
+step and must be verified separately.
+
 **Build from a clean Linux checkout (no application secrets needed):**
 
 ```bash
