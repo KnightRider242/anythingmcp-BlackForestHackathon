@@ -52,18 +52,10 @@ RUN mkdir -p packages/cli && \
 RUN npm install --omit=dev --network-timeout=600000 && \
     rm -rf node_modules/typescript node_modules/react-dom node_modules/react
 
-# The runner stage ships only this stage's hoisted node_modules. A package npm
-# had to nest under packages/backend/node_modules (a second version of
-# something the root also needs) would be missing there, and the backend would
-# load the root's version at runtime: js-yaml 5 crash-looped the image that way
-# (#809). Fail the build here instead. scripts/check-runtime-deps.mjs runs the
-# same check on the lockfile in CI.
-RUN nested=$(ls -A packages/backend/node_modules 2>/dev/null | grep -v '^\.bin$' || true); \
-    if [ -n "$nested" ]; then \
-      echo "Nested backend dependencies would be missing from the image:" >&2; \
-      echo "$nested" >&2; \
-      exit 1; \
-    fi
+# Retain any npm-nested backend production dependencies. The runner copies
+# these AFTER the hoisted tree so workspace-specific versions take precedence.
+# Always keep the source directory present for COPY, even when npm hoists all.
+RUN mkdir -p packages/backend/node_modules
 
 # ── Stage 2: Build Backend ──────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS backend-builder
@@ -137,6 +129,10 @@ COPY --from=backend-builder --chown=appuser:appuser /app/packages/backend/packag
 
 # Backend node_modules — only backend production deps (no frontend, no devDeps)
 COPY --from=backend-prod-deps /app/node_modules ./backend/node_modules
+# The backend may need a different major/minor than another workspace (for
+# example MCP core or js-yaml). Overlay nested packages into the actual backend
+# runtime node_modules so they are not silently substituted by hoisted copies.
+COPY --from=backend-prod-deps --chown=appuser:appuser /app/packages/backend/node_modules ./backend/node_modules
 
 # ── Frontend artifacts (Next.js standalone) ──
 # In a monorepo, Next.js standalone output preserves the workspace directory
