@@ -1,21 +1,12 @@
 #!/usr/bin/env node
 /**
- * Fails when a production dependency of the backend is nested under
- * packages/backend/node_modules in package-lock.json.
+ * Verify the production Dockerfile packages all backend runtime dependencies.
  *
- * The Docker runtime stage copies only the hoisted /app/node_modules of the
- * prod-deps stage into backend/node_modules. npm nests a package under the
- * workspace when the backend needs a different version of something the root
- * also needs. That copy never reaches the image: the backend then loads the
- * root's version and can crash at boot, while unit tests (which resolve the
- * nested copy) stay green. js-yaml 5 did exactly that on 2026-10-02 (#809).
+ * npm can nest a second package version under packages/backend/node_modules.
+ * The runtime image must copy that directory AFTER hoisted /app/node_modules
+ * into ./backend/node_modules, or NestJS resolves the wrong/missing version.
  *
- * Fix it by aligning versions so npm can hoist one copy, or change the
- * Dockerfile to ship nested packages (and keep the root's copy for the
- * packages that need it) before allowing an exception here.
- *
- *   node scripts/check-runtime-deps.mjs            # checks ./package-lock.json
- *   node scripts/check-runtime-deps.mjs <lockfile>
+ * The CI smoke-build then boots the assembled image to catch runtime issues.
  */
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -23,24 +14,48 @@ import { fileURLToPath } from 'node:url';
 
 const NESTED = 'packages/backend/node_modules/';
 
-/** Production packages the lockfile nests under the backend workspace. */
+/** Production dependencies npm nests in the backend workspace. */
 export function nestedRuntimeDeps(lock) {
   return Object.entries(lock.packages ?? {})
     .filter(([path, meta]) => path.startsWith(NESTED) && !meta.dev)
     .map(([path, meta]) => ({ name: path.slice(NESTED.length), version: meta.version }));
 }
 
+/** Verify both trees are copied in the correct order into the runtime image. */
+export function assertNestedDepsPackaged(lock, dockerfile) {
+  const nested = nestedRuntimeDeps(lock);
+  if (nested.length === 0) return nested;
+  const copies = dockerfile.split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => /^COPY\s+/.test(line) && line.includes('--from=backend-prod-deps'));
+  const hoisted = copies.findIndex(line =>
+    /\s\/app\/node_modules\s+\.\/backend\/node_modules$/.test(line));
+  const overlay = copies.findIndex(line =>
+    /\s\/app\/packages\/backend\/node_modules\s+\.\/backend\/node_modules$/.test(line));
+  if (hoisted < 0 || overlay <= hoisted) {
+    throw new Error('Dockerfile must copy hoisted backend production deps and then overlay ' +
+      'packages/backend/node_modules into ./backend/node_modules');
+  }
+  return nested;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const file = process.argv[2] ?? join(root, 'package-lock.json');
-  const nested = nestedRuntimeDeps(JSON.parse(readFileSync(file, 'utf8')));
-  if (nested.length === 0) {
-    console.log('No backend production dependency is nested: the runtime image gets them all.');
-    process.exit(0);
+  const lockPath = process.argv[2] ?? join(root, 'package-lock.json');
+  const dockerfilePath = join(root, 'Dockerfile');
+  try {
+    const nested = assertNestedDepsPackaged(
+      JSON.parse(readFileSync(lockPath, 'utf8')),
+      readFileSync(dockerfilePath, 'utf8'),
+    );
+    if (nested.length === 0) {
+      console.log('All backend production dependencies hoisted; runtime image packages them.');
+    } else {
+      console.log('Verified backend nested-dependency overlay in production Dockerfile:');
+      for (const item of nested) console.log('  - ' + item.name + '@' + item.version);
+    }
+  } catch (error) {
+    console.error('::error::' + error.message);
+    process.exitCode = 1;
   }
-  console.error('::error::These backend production dependencies are nested under packages/backend/node_modules');
-  console.error('and would be missing from the Docker image (it ships only the hoisted node_modules):');
-  for (const d of nested) console.error(`  - ${d.name}@${d.version}`);
-  console.error('Align the versions so npm hoists a single copy. See scripts/check-runtime-deps.mjs.');
-  process.exit(1);
 }
