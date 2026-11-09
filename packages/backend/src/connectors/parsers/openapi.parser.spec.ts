@@ -826,4 +826,52 @@ describe('OpenApiParser', () => {
     expect(Object.keys((t.outputSchema as any).properties)).toContain('order_id');
   });
 
+  it('does not resolve external HTTP references in an imported spec', async () => {
+    const spec = {
+      openapi: '3.0.0',
+      info: { title: 'External reference test', version: '1.0' },
+      paths: {
+        '/records': {
+          get: {
+            operationId: 'listRecords',
+            responses: {
+              '200': {
+                description: 'OK',
+                content: { 'application/json': { schema: { $ref: 'http://127.0.0.1:1/private.json' } } },
+              },
+            },
+          },
+        },
+      },
+    };
+    // A network fetch to the loopback URL above would bypass our guarded
+    // importer and must never occur (even in test mode).
+    const tools = await parser.parse(spec);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].outputSchema).toBeUndefined();
+  });
+
+  it('does not resolve external file references in an imported spec', async () => {
+    const spec = {
+      openapi: '3.1.0',
+      info: { title: 'File reference test', version: '1.0' },
+      paths: {
+        '/records': {
+          get: {
+            operationId: 'listRecords',
+            responses: {
+              '200': {
+                description: 'OK',
+                content: { 'application/json': { schema: { $ref: 'file:///etc/passwd' } } },
+              },
+            },
+          },
+        },
+      },
+    };
+    const tools = await parser.parse(spec);
+    expect(tools).toHaveLength(1);
+    expect(tools[0].outputSchema).toBeUndefined();
+  });
+
 });
