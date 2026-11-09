@@ -99,11 +99,16 @@ export class OpenApiParser {
       normalizeOpenApi31(rawSpec);
     }
 
+    // Imported specs are untrusted. swagger-parser's default external $ref
+    // resolver can fetch arbitrary URLs or local files, bypassing the SSRF
+    // guarded HTTP client used by parseSpecFromUrl(). Only local refs are
+    // required for this parser's in-document tool extraction.
+    const localRefsOnly = { resolve: { external: false } };
     let api: unknown;
     try {
       api = isOpenApi31
-        ? await SwaggerParser.dereference(rawSpec as any)
-        : await SwaggerParser.validate(rawSpec as any);
+        ? await SwaggerParser.dereference(rawSpec as any, localRefsOnly)
+        : await SwaggerParser.validate(rawSpec as any, localRefsOnly);
     } catch (err: any) {
       // swagger-parser's bundled validator only knows OAS 3.0.0–3.0.3, so newer
       // patch releases (e.g. 3.0.4, current as of 2024) are rejected as
@@ -111,7 +116,7 @@ export class OpenApiParser {
       // so fall back to it (same path as 3.1) to still extract tools.
       if (err?.message?.includes('Unsupported OpenAPI version')) {
         try {
-          api = await SwaggerParser.dereference(rawSpec as any);
+          api = await SwaggerParser.dereference(rawSpec as any, localRefsOnly);
         } catch {
           throw new Error(
             'This OpenAPI document declares a version we don\'t fully support. ' +
